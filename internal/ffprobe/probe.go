@@ -70,7 +70,7 @@ func parseFPS(fpsStr string) (float64, error) {
 	den, err2 := strconv.ParseFloat(parts[1], 64)
 
 	if err1 != nil || err2 != nil || den == 0 {
-		return 0, errors.New("invalid fps format")
+		return 0, ErrParseError
 	}
 
 	return num / den, nil
@@ -123,7 +123,7 @@ func Probe(ctx context.Context, filePath string) (*ProbeData, error) {
 		if stream.CodecType == "video" && res.Video == nil {
 			fps, err := parseFPS(stream.RFrameRate)
 			if err != nil {
-				fps = 0
+				return nil, ErrParseError
 			}
 
 			res.Video = &VideoStream{
@@ -136,7 +136,7 @@ func Probe(ctx context.Context, filePath string) (*ProbeData, error) {
 		} else if stream.CodecType == "audio" && res.Audio == nil {
 			sr, err := strconv.Atoi(stream.SampleRate)
 			if err != nil {
-				sr = 0
+				return nil, ErrParseError
 			}
 
 			res.Audio = &AudioStream{
