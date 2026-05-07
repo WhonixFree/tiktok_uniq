@@ -1,0 +1,30 @@
+{"time":"2026-05-07T04:18:36.806173648+02:00","level":"INFO","msg":"startup configuration loaded","app":"videobatch","input":"./input","output":"./output","tmp":"./tmp","logs":"./logs","jobs":1,"threads_per_job":16,"seed":0,"dry_run":true,"cleanup":true,"cpu_count":16}
+{"time":"2026-05-07T04:18:36.944568531+02:00","level":"INFO","msg":"dependency available","app":"videobatch","name":"ffmpeg","command":"ffmpeg"}
+{"time":"2026-05-07T04:18:37.057378102+02:00","level":"INFO","msg":"dependency available","app":"videobatch","name":"ffprobe","command":"ffprobe"}
+{"time":"2026-05-07T04:18:37.057656508+02:00","level":"WARN","msg":"optional dependency missing","app":"videobatch","name":"exiftool","error":"exiftool not found: Install ExifTool or run with --metadata off until metadata processing is needed."}
+{"time":"2026-05-07T04:18:37.066111489+02:00","level":"INFO","msg":"dependency available","app":"videobatch","name":"python3","command":"python3"}
+{"time":"2026-05-07T04:18:37.066172674+02:00","level":"INFO","msg":"startup checks passed","app":"videobatch"}
+{"time":"2026-05-07T04:18:37.06618938+02:00","level":"INFO","msg":"skeleton initialized; processing modules are not implemented yet","app":"videobatch"}
+{"time":"2026-05-07T04:19:15.26252579+02:00","level":"INFO","msg":"startup configuration loaded","app":"videobatch","input":"./input","output":"./output","tmp":"./tmp","logs":"./logs","jobs":1,"threads_per_job":16,"seed":0,"dry_run":true,"cleanup":true,"cpu_count":16}
+{"time":"2026-05-07T04:19:15.351511334+02:00","level":"INFO","msg":"dependency available","app":"videobatch","name":"ffmpeg","command":"ffmpeg"}
+{"time":"2026-05-07T04:19:15.459599892+02:00","level":"INFO","msg":"dependency available","app":"videobatch","name":"ffprobe","command":"ffprobe"}
+{"time":"2026-05-07T04:19:15.459796099+02:00","level":"WARN","msg":"optional dependency missing","app":"videobatch","name":"exiftool","error":"exiftool not found: Install ExifTool or run with --metadata off until metadata processing is needed."}
+{"time":"2026-05-07T04:19:15.464312919+02:00","level":"INFO","msg":"dependency available","app":"videobatch","name":"python3","command":"python3"}
+{"time":"2026-05-07T04:19:15.464373673+02:00","level":"INFO","msg":"startup checks passed","app":"videobatch"}
+{"time":"2026-05-07T04:19:15.464424711+02:00","level":"INFO","msg":"skeleton initialized; processing modules are not implemented yet","app":"videobatch"}
+{"time":"2026-05-07T04:47:00.70692832+02:00","level":"INFO","msg":"startup configuration loaded","app":"videobatch","input":"./input","output":"./output","tmp":"./tmp","logs":"./logs","recursive":true,"jobs":1,"threads_per_job":16,"seed":0,"dry_run":true,"cleanup":true,"cpu_count":16}
+{"time":"2026-05-07T04:47:00.710521106+02:00","level":"INFO","msg":"startup configuration loaded","app":"videobatch","input":"./input","output":"./output","tmp":"./tmp","logs":"./logs","recursive":false,"jobs":1,"threads_per_job":16,"seed":0,"dry_run":true,"cleanup":true,"cpu_count":16}
+{"time":"2026-05-07T04:47:00.806266637+02:00","level":"INFO","msg":"dependency available","app":"videobatch","name":"ffmpeg","command":"ffmpeg"}
+{"time":"2026-05-07T04:47:00.820993979+02:00","level":"INFO","msg":"dependency available","app":"videobatch","name":"ffmpeg","command":"ffmpeg"}
+{"time":"2026-05-07T04:47:00.914851038+02:00","level":"INFO","msg":"dependency available","app":"videobatch","name":"ffprobe","command":"ffprobe"}
+{"time":"2026-05-07T04:47:00.914999664+02:00","level":"WARN","msg":"optional dependency missing","app":"videobatch","name":"exiftool","error":"exiftool not found: Install ExifTool or run with --metadata off until metadata processing is needed."}
+{"time":"2026-05-07T04:47:00.922996895+02:00","level":"INFO","msg":"dependency available","app":"videobatch","name":"python3","command":"python3"}
+{"time":"2026-05-07T04:47:00.92303761+02:00","level":"INFO","msg":"startup checks passed","app":"videobatch"}
+{"time":"2026-05-07T04:47:00.92313563+02:00","level":"INFO","msg":"scan completed","app":"videobatch","file_count":3}
+{"time":"2026-05-07T04:47:00.923160706+02:00","level":"INFO","msg":"dry-run plan ready","app":"videobatch","message":"Would process 3 files","file_count":3}
+{"time":"2026-05-07T04:47:00.928040653+02:00","level":"INFO","msg":"dependency available","app":"videobatch","name":"ffprobe","command":"ffprobe"}
+{"time":"2026-05-07T04:47:00.92820079+02:00","level":"WARN","msg":"optional dependency missing","app":"videobatch","name":"exiftool","error":"exiftool not found: Install ExifTool or run with --metadata off until metadata processing is needed."}
+{"time":"2026-05-07T04:47:00.93616975+02:00","level":"INFO","msg":"dependency available","app":"videobatch","name":"python3","command":"python3"}
+{"time":"2026-05-07T04:47:00.936226126+02:00","level":"INFO","msg":"startup checks passed","app":"videobatch"}
+{"time":"2026-05-07T04:47:00.936340022+02:00","level":"INFO","msg":"scan completed","app":"videobatch","file_count":2}
+{"time":"2026-05-07T04:47:00.936377617+02:00","level":"INFO","msg":"dry-run plan ready","app":"videobatch","message":"Would process 2 files","file_count":2}
