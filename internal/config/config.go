@@ -46,7 +46,6 @@ type Config struct {
 
 	StreamOverlayDir     string
 	StreamOverlayOpacity float64
-	StreamOverlayRandom  bool
 
 	MetadataPolicy string
 

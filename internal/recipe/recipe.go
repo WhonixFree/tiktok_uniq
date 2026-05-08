@@ -182,13 +182,11 @@ func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
 	rec.DuckingRatio = cfg.DuckRatio
 
 	//StreamOverlay
-	if cfg.StreamOverlayRandom {
-		overlayFiles, err := filepath.Glob(filepath.Join(cfg.StreamOverlayDir, "*"))
-		if err != nil || len(overlayFiles) == 0 {
-			return nil, errors.New("no stream overlay files found")
-		}
-		rec.StreamOverlayPath = overlayFiles[rng.Intn(len(overlayFiles))]
+	overlayFiles, err := filepath.Glob(filepath.Join(cfg.StreamOverlayDir, "*"))
+	if err != nil || len(overlayFiles) == 0 {
+		return nil, errors.New("no stream overlay files found")
 	}
+	rec.StreamOverlayPath = overlayFiles[rng.Intn(len(overlayFiles))]
 	rec.OverlayOpacity = cfg.StreamOverlayOpacity
 
 	//Temporal/FPS/Codec

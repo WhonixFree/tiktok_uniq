@@ -58,7 +58,6 @@ func ParseFlags(args []string, output io.Writer) (Config, error) {
 
 	fs.StringVar(&cfg.StreamOverlayDir, "stream-overlay-dir", "./assets/stream_overlays", "stream overlay directory")
 	fs.Float64Var(&cfg.StreamOverlayOpacity, "stream-overlay-opacity", 0.02, "stream overlay opacity (recommended: 0.01-0.03)")
-	fs.BoolVar(&cfg.StreamOverlayRandom, "stream-overlay-random", false, "choose stream overlay randomly")
 
 	fs.StringVar(&cfg.MetadataPolicy, "metadata-policy", "./configs/metadata_policy.json", "metadata policy path")
 
