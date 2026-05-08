@@ -14,19 +14,15 @@ vendor/
 # Environment
 .env
 .env.local
-.env.*
+*.env.*
 
-# Editors
-.vscode/
-.idea/
+# Coverage
+coverage/
+htmlcov/
+.coverage
 
 # Build artifacts
-build/
 dist/
+build/
 target/
-
-# Go-specific
-*.a
-*.so
-*.dylib
 ```
