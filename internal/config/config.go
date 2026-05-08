@@ -37,12 +37,11 @@ type Config struct {
 	AudioEnvelope       string
 	AudioEnvelopeConfig string
 
-	MusicDir      string
-	MusicVolume   float64
-	MusicDucking  bool
-	DuckRatio     float64
-	DuckAttackMS  int
-	DuckReleaseMS int
+	MusicEnabled bool
+	MusicDir     string
+	MusicVolume  float64
+	MusicDucking bool
+	DuckingMod   string
 
 	StreamOverlayDir     string
 	StreamOverlayOpacity float64
