@@ -57,11 +57,9 @@ func ParseFlags(args []string, output io.Writer) (Config, error) {
 	fs.IntVar(&cfg.DuckReleaseMS, "duck-release-ms", 300, "ducking release in milliseconds")
 
 	fs.StringVar(&cfg.StreamOverlayDir, "stream-overlay-dir", "./assets/stream_overlays", "stream overlay directory")
-	fs.Float64Var(&cfg.StreamOverlayOpacity, "stream-overlay-opacity", 0.02, "stream overlay opacity")
-	fs.StringVar(&cfg.StreamOverlayMode, "stream-overlay-mode", "normal", "stream overlay mode: normal|stealth")
+	fs.Float64Var(&cfg.StreamOverlayOpacity, "stream-overlay-opacity", 0.02, "stream overlay opacity (recommended: 0.01-0.03)")
 	fs.BoolVar(&cfg.StreamOverlayRandom, "stream-overlay-random", false, "choose stream overlay randomly")
 
-	fs.StringVar(&cfg.Metadata, "metadata", "off", "metadata mode: off|read|clean|clean-and-diversify")
 	fs.StringVar(&cfg.MetadataPolicy, "metadata-policy", "./configs/metadata_policy.json", "metadata policy path")
 
 	fs.Float64Var(&cfg.TemporalShift, "temporal-shift", 0, "temporal shift multiplier delta")
@@ -139,15 +137,6 @@ func (cfg Config) Validate() error {
 	}
 	if cfg.StreamOverlayOpacity < 0 || cfg.StreamOverlayOpacity > 1 {
 		errs = append(errs, errors.New("--stream-overlay-opacity must be between 0 and 1"))
-	}
-	if !oneOf(cfg.StreamOverlayMode, "normal", "stealth") {
-		errs = append(errs, errors.New("--stream-overlay-mode must be one of normal|stealth"))
-	}
-	if cfg.StreamOverlayMode == "stealth" && (cfg.StreamOverlayOpacity < 0.01 || cfg.StreamOverlayOpacity > 0.03) {
-		errs = append(errs, errors.New("--stream-overlay-opacity must be 0.01-0.03 in stealth mode"))
-	}
-	if !oneOf(cfg.Metadata, "off", "read", "clean", "clean-and-diversify") {
-		errs = append(errs, errors.New("--metadata must be one of off|read|clean|clean-and-diversify"))
 	}
 	if !oneOf(cfg.CodecProfile, "fast", "balanced", "strong") {
 		errs = append(errs, errors.New("--codec-profile must be one of fast|balanced|strong"))

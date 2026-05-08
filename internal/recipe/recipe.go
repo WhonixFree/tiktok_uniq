@@ -42,7 +42,6 @@ type Recipe struct {
 
 	StreamOverlayPath string
 	OverlayOpacity    float64
-	OverlayMode       string
 
 	TemporalShift float64
 	FpsTweak      float64
@@ -50,8 +49,6 @@ type Recipe struct {
 	AudioCodec    string
 
 	Profile string
-
-	MetadataMode string
 }
 
 func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
@@ -174,4 +171,32 @@ func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
 		return nil, fmt.Errorf("invalid audio envelope mode: %s", cfg.AudioEnvelope)
 	}
 
+	//Music
+	musicFiles, err := filepath.Glob(filepath.Join(cfg.MusicDir, "*"))
+	if err != nil || len(musicFiles) == 0 {
+		return nil, errors.New("no music files found")
+	}
+	rec.MusicPath = musicFiles[rng.Intn(len(musicFiles))]
+	rec.MusicVolume = cfg.MusicVolume
+	rec.DuckingEnabled = cfg.MusicDucking
+	rec.DuckingRatio = cfg.DuckRatio
+
+	//StreamOverlay
+	if cfg.StreamOverlayRandom {
+		overlayFiles, err := filepath.Glob(filepath.Join(cfg.StreamOverlayDir, "*"))
+		if err != nil || len(overlayFiles) == 0 {
+			return nil, errors.New("no stream overlay files found")
+		}
+		rec.StreamOverlayPath = overlayFiles[rng.Intn(len(overlayFiles))]
+	}
+	rec.OverlayOpacity = cfg.StreamOverlayOpacity
+
+	//Temporal/FPS/Codec
+	rec.TemporalShift = cfg.TemporalShift
+	rec.FpsTweak = cfg.FPSTweak
+	rec.VideoCodec = "libx264"
+	rec.AudioCodec = "aac"
+	rec.Profile = cfg.CodecProfile
+
+	return &rec, nil
 }
