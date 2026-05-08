@@ -1,5 +1,5 @@
 ```
-# Compiled and binary files
+# Compiled and build artifacts
 *.o
 *.obj
 *.out
@@ -16,13 +16,31 @@ vendor/
 .env.local
 *.env.*
 
+# Editors
+.vscode/
+.idea/
+
 # Coverage
 coverage/
 htmlcov/
 .coverage
 
-# Build artifacts
-dist/
+# Build
 build/
+dist/
 target/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Go
+*.a
+*.so
+*.dylib
+
+# Original rules preserved
+*.log
 ```

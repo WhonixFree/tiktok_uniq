@@ -49,12 +49,11 @@ func ParseFlags(args []string, output io.Writer) (Config, error) {
 	fs.StringVar(&cfg.AudioEnvelope, "audio-envelope", "off", "audio envelope mode: off|python")
 	fs.StringVar(&cfg.AudioEnvelopeConfig, "audio-envelope-config", "", "audio envelope config path")
 
+	fs.BoolVar(&cfg.MusicEnabled, "music", false, "enable background music")
 	fs.StringVar(&cfg.MusicDir, "music-dir", "./assets/music", "music directory")
 	fs.Float64Var(&cfg.MusicVolume, "music-volume", 0.06, "background music volume")
 	fs.BoolVar(&cfg.MusicDucking, "music-ducking", false, "enable music ducking")
-	fs.Float64Var(&cfg.DuckRatio, "duck-ratio", 6, "ducking ratio")
-	fs.IntVar(&cfg.DuckAttackMS, "duck-attack-ms", 20, "ducking attack in milliseconds")
-	fs.IntVar(&cfg.DuckReleaseMS, "duck-release-ms", 300, "ducking release in milliseconds")
+	fs.StringVar(&cfg.DuckingMod, "ducking-mod", "standard", "ducking mode: soft|standard|aggressive")
 
 	fs.StringVar(&cfg.StreamOverlayDir, "stream-overlay-dir", "./assets/stream_overlays", "stream overlay directory")
 	fs.Float64Var(&cfg.StreamOverlayOpacity, "stream-overlay-opacity", 0.02, "stream overlay opacity (recommended: 0.01-0.03)")
@@ -128,11 +127,8 @@ func (cfg Config) Validate() error {
 	if cfg.MusicVolume < 0 {
 		errs = append(errs, errors.New("--music-volume must be >= 0"))
 	}
-	if cfg.DuckRatio <= 0 {
-		errs = append(errs, errors.New("--duck-ratio must be > 0"))
-	}
-	if cfg.DuckAttackMS < 0 || cfg.DuckReleaseMS < 0 {
-		errs = append(errs, errors.New("ducking timings must be >= 0"))
+	if !oneOf(cfg.DuckingMod, "soft", "standard", "aggressive") {
+		errs = append(errs, errors.New("--ducking-mod must be one of soft|standard|aggressive"))
 	}
 	if cfg.StreamOverlayOpacity < 0 || cfg.StreamOverlayOpacity > 1 {
 		errs = append(errs, errors.New("--stream-overlay-opacity must be between 0 and 1"))

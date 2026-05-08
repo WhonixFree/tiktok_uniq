@@ -35,11 +35,11 @@ type Recipe struct {
 	AudioEnvelopeEnabled bool
 	AudioEnvelope        string
 
-	MusicPath   string
-	MusicVolume float64
+	MusicEnabled  bool
+	MusicPath     string
+	MusicVolume   float64
 
 	DuckingEnabled bool
-	DuckingRatio   float64
 	DuckRatio      float64
 	DuckAttackMS   int
 	DuckReleaseMS  int
@@ -176,30 +176,53 @@ func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
 	}
 
 	//Music
-	// TODO: flag for background music
-	if _, err := os.Stat(cfg.MusicDir); err != nil {
-		return nil, errors.New("music dir does not exist")
-	}
-	var Music []string
-	patterns := []string{"*.mp3", "*.wav", "*.flac", "*.ogg"}
-	for _, pattern := range patterns {
-		matches, err := filepath.Glob(filepath.Join(cfg.MusicDir, pattern))
-		if err != nil {
-			return nil, fmt.Errorf("error searching music files: %w", err)
+	if !cfg.MusicEnabled {
+		rec.MusicEnabled = false
+		rec.MusicPath = ""
+	} else {
+		rec.MusicEnabled = true
+		if _, err := os.Stat(cfg.MusicDir); err != nil {
+			return nil, errors.New("music dir does not exist")
 		}
-		Music = append(Music, matches...)
+		var Music []string
+		patterns := []string{"*.mp3", "*.wav", "*.flac", "*.ogg"}
+		for _, pattern := range patterns {
+			matches, err := filepath.Glob(filepath.Join(cfg.MusicDir, pattern))
+			if err != nil {
+				return nil, fmt.Errorf("error searching music files: %w", err)
+			}
+			Music = append(Music, matches...)
+		}
+		if len(Music) == 0 {
+			return nil, errors.New("no music files found")
+		}
+		randomIndex := rng.Intn(len(Music))
+		rec.MusicPath = Music[randomIndex]
+		rec.MusicVolume = cfg.MusicVolume
 	}
-	if len(Music) == 0 {
-		return nil, errors.New("no music files found")
-	}
-	randomIndex := rng.Intn(len(Music))
-	rec.MusicPath = Music[randomIndex]
-	rec.MusicVolume = cfg.MusicVolume
 
 	//Ducking
-	// TODO: сfg.DuckingMod
 	rec.DuckingEnabled = cfg.MusicDucking
-	rec.DuckingRatio = cfg.DuckRatio
+	if cfg.MusicDucking {
+		switch cfg.DuckingMod {
+		case "soft":
+			rec.DuckRatio = 0.6
+			rec.DuckAttackMS = 150
+			rec.DuckReleaseMS = 400
+		case "standard":
+			rec.DuckRatio = 0.35
+			rec.DuckAttackMS = 50
+			rec.DuckReleaseMS = 300
+		case "aggressive":
+			rec.DuckRatio = 0.15
+			rec.DuckAttackMS = 20
+			rec.DuckReleaseMS = 200
+		default:
+			rec.DuckRatio = 0.35
+			rec.DuckAttackMS = 50
+			rec.DuckReleaseMS = 300
+		}
+	}
 
 	//StreamOverlay
 	if _, err := os.Stat(cfg.StreamOverlayDir); err != nil {
