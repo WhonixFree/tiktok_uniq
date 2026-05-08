@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"videobatch/internal/config"
 	"videobatch/internal/ffprobe"
@@ -56,6 +57,13 @@ type Recipe struct {
 }
 
 func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
+	if probe == nil {
+		return nil, errors.New("recipe is nil")
+	}
+	if reflect.DeepEqual(cfg, config.Config{}) {
+		return nil, errors.New("recipe config is nil")
+	}
+
 	rec := Recipe{}
 	rng := rand.New(rand.NewSource(cfg.Seed))
 
@@ -185,7 +193,7 @@ func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
 			return nil, errors.New("music dir does not exist")
 		}
 		var Music []string
-		music_patterns := []string{"*.mp3", "*.wav", "*.flac", "*.ogg", "*.m4a", "*.acc"}
+		music_patterns := []string{"*.mp3", "*.wav", "*.flac", "*.ogg", "*.m4a", "*.aac"}
 		for _, pattern := range music_patterns {
 			matches, err := filepath.Glob(filepath.Join(cfg.MusicDir, pattern))
 			if err != nil {
@@ -231,7 +239,7 @@ func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
 	var Video []string
 	video_patterns := []string{"*.mp4", "*.mkv", "*.avi", "*.mov", "*.webm", "*.mp3", "*.wav", "*.flac", "*.ogg"}
 	for _, pattern := range video_patterns {
-		matches, err := filepath.Glob(filepath.Join(cfg.MusicDir, pattern))
+		matches, err := filepath.Glob(filepath.Join(cfg.StreamOverlayDir, pattern))
 		if err != nil {
 			return nil, fmt.Errorf("error searching music files: %w", err)
 		}

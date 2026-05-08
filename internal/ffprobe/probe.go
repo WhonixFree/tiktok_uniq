@@ -146,6 +146,9 @@ func Probe(ctx context.Context, filePath string) (*ProbeData, error) {
 			}
 		}
 	}
+	if res.Video == nil || res.Audio == nil {
+		return nil, ErrInvalidMedia
+	}
 
 	return res, nil
 }
