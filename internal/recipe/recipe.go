@@ -28,7 +28,6 @@ type Recipe struct {
 	ColorStrength   float64
 
 	CaptionsEnabled     bool
-	CaptionsOutputPath  string
 	CaptionTemplatePath string
 	CaptionLanguage     string
 	CaptionModel        string
@@ -129,9 +128,6 @@ func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
 	if cfg.Captions == "off" {
 		rec.CaptionsEnabled = false
 	} else if cfg.Captions == "auto" {
-		baseName := strings.TrimSuffix(filepath.Base(rec.InputPath), filepath.Ext(rec.InputPath))
-		rec.CaptionsOutputPath = filepath.Join(cfg.TmpDir, baseName+"_captions.ass")
-
 		rec.CaptionModel = cfg.CaptionModel
 		rec.CaptionLanguage = cfg.CaptionLanguage
 

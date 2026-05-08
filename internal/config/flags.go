@@ -106,8 +106,17 @@ func (cfg Config) Validate() error {
 	if cfg.TrimEndMax < cfg.TrimEndMin {
 		errs = append(errs, errors.New("--trim-end-max must be >= --trim-end-min"))
 	}
-	if cfg.CropMinPercent < 0 || cfg.CropMaxPercent < 0 {
-		errs = append(errs, errors.New("crop percent values must be >= 0"))
+	if cfg.CropMinPercent <= 0 {
+		errs = append(errs, errors.New("--crop-min-percent must be > 0"))
+	}
+	if cfg.CropMaxPercent <= 0 {
+		errs = append(errs, errors.New("--crop-max-percent must be > 0"))
+	}
+	if cfg.CropMinPercent >= 100 {
+		errs = append(errs, errors.New("--crop-min-percent must be < 100"))
+	}
+	if cfg.CropMaxPercent >= 100 {
+		errs = append(errs, errors.New("--crop-max-percent must be < 100"))
 	}
 	if cfg.CropMaxPercent < cfg.CropMinPercent {
 		errs = append(errs, errors.New("--crop-max-percent must be >= --crop-min-percent"))
