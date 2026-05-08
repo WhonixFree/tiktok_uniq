@@ -174,7 +174,6 @@ func runStartupChecks(ctx context.Context, cfg config.Config, logger *slog.Logge
 }
 
 func startupDependencies(cfg config.Config) []dependency {
-	exifRequired := cfg.Metadata != "off"
 	return []dependency{
 		{
 			Name:        "ffmpeg",
@@ -194,8 +193,8 @@ func startupDependencies(cfg config.Config) []dependency {
 			Name:        "exiftool",
 			Command:     "exiftool",
 			Args:        []string{"-ver"},
-			Required:    exifRequired,
-			InstallHint: "Install ExifTool or run with --metadata off until metadata processing is needed.",
+			Required:    true,
+			InstallHint: "Install ExifTool for metadata processing.",
 		},
 		{
 			Name:        "python3",
