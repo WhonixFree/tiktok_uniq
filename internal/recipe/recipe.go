@@ -35,9 +35,9 @@ type Recipe struct {
 	AudioEnvelopeEnabled bool
 	AudioEnvelope        string
 
-	MusicEnabled  bool
-	MusicPath     string
-	MusicVolume   float64
+	MusicEnabled bool
+	MusicPath    string
+	MusicVolume  float64
 
 	DuckingEnabled bool
 	DuckRatio      float64
@@ -185,8 +185,8 @@ func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
 			return nil, errors.New("music dir does not exist")
 		}
 		var Music []string
-		patterns := []string{"*.mp3", "*.wav", "*.flac", "*.ogg"}
-		for _, pattern := range patterns {
+		music_patterns := []string{"*.mp3", "*.wav", "*.flac", "*.ogg", "*.m4a", "*.acc"}
+		for _, pattern := range music_patterns {
 			matches, err := filepath.Glob(filepath.Join(cfg.MusicDir, pattern))
 			if err != nil {
 				return nil, fmt.Errorf("error searching music files: %w", err)
@@ -229,8 +229,8 @@ func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
 		return nil, errors.New("stream overlay dir does not exist")
 	}
 	var Video []string
-	patterns = []string{"*.mp4", "*.wav", "*.flac", "*.ogg"}
-	for _, pattern := range patterns {
+	video_patterns := []string{"*.mp4", "*.mkv", "*.avi", "*.mov", "*.webm", "*.mp3", "*.wav", "*.flac", "*.ogg"}
+	for _, pattern := range video_patterns {
 		matches, err := filepath.Glob(filepath.Join(cfg.MusicDir, pattern))
 		if err != nil {
 			return nil, fmt.Errorf("error searching music files: %w", err)
@@ -240,7 +240,7 @@ func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
 	if len(Video) == 0 {
 		return nil, errors.New("no video files found")
 	}
-	randomIndex = rng.Intn(len(Video))
+	randomIndex := rng.Intn(len(Video))
 	rec.StreamOverlayPath = Video[randomIndex]
 	rec.OverlayOpacity = cfg.StreamOverlayOpacity
 
