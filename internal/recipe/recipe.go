@@ -35,10 +35,14 @@ type Recipe struct {
 	AudioEnvelopeEnabled bool
 	AudioEnvelope        string
 
-	MusicPath      string
-	MusicVolume    float64
+	MusicPath   string
+	MusicVolume float64
+
 	DuckingEnabled bool
 	DuckingRatio   float64
+	DuckRatio      float64
+	DuckAttackMS   int
+	DuckReleaseMS  int
 
 	StreamOverlayPath string
 	OverlayOpacity    float64
@@ -172,21 +176,49 @@ func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
 	}
 
 	//Music
-	musicFiles, err := filepath.Glob(filepath.Join(cfg.MusicDir, "*"))
-	if err != nil || len(musicFiles) == 0 {
+	// TODO: flag for background music
+	if _, err := os.Stat(cfg.MusicDir); err != nil {
+		return nil, errors.New("music dir does not exist")
+	}
+	var Music []string
+	patterns := []string{"*.mp3", "*.wav", "*.flac", "*.ogg"}
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(filepath.Join(cfg.MusicDir, pattern))
+		if err != nil {
+			return nil, fmt.Errorf("error searching music files: %w", err)
+		}
+		Music = append(Music, matches...)
+	}
+	if len(Music) == 0 {
 		return nil, errors.New("no music files found")
 	}
-	rec.MusicPath = musicFiles[rng.Intn(len(musicFiles))]
+	randomIndex := rng.Intn(len(Music))
+	rec.MusicPath = Music[randomIndex]
 	rec.MusicVolume = cfg.MusicVolume
+
+	//Ducking
+	// TODO: сfg.DuckingMod
 	rec.DuckingEnabled = cfg.MusicDucking
 	rec.DuckingRatio = cfg.DuckRatio
 
 	//StreamOverlay
-	overlayFiles, err := filepath.Glob(filepath.Join(cfg.StreamOverlayDir, "*"))
-	if err != nil || len(overlayFiles) == 0 {
-		return nil, errors.New("no stream overlay files found")
+	if _, err := os.Stat(cfg.StreamOverlayDir); err != nil {
+		return nil, errors.New("stream overlay dir does not exist")
 	}
-	rec.StreamOverlayPath = overlayFiles[rng.Intn(len(overlayFiles))]
+	var Video []string
+	patterns = []string{"*.mp4", "*.wav", "*.flac", "*.ogg"}
+	for _, pattern := range patterns {
+		matches, err := filepath.Glob(filepath.Join(cfg.MusicDir, pattern))
+		if err != nil {
+			return nil, fmt.Errorf("error searching music files: %w", err)
+		}
+		Video = append(Video, matches...)
+	}
+	if len(Video) == 0 {
+		return nil, errors.New("no video files found")
+	}
+	randomIndex = rng.Intn(len(Video))
+	rec.StreamOverlayPath = Video[randomIndex]
 	rec.OverlayOpacity = cfg.StreamOverlayOpacity
 
 	//Temporal/FPS/Codec
