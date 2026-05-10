@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"videobatch/internal/ffprobe"
 	"videobatch/internal/pixel"
 	"videobatch/internal/recipe"
+	"videobatch/internal/scanner"
 	"videobatch/internal/workerpool"
 )
 
@@ -96,6 +98,220 @@ func TestRunStartupChecksReturnsErrorWhenRequiredDependencyMissing(t *testing.T)
 	}
 	if !strings.Contains(err.Error(), "missing-tool not found") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWorkerPipelineE2EProcessesBatchIncludingVideoOnly(t *testing.T) {
+	dir := t.TempDir()
+	inputDir := filepath.Join(dir, "input")
+	outputDir := filepath.Join(dir, "output")
+	tmpDir := filepath.Join(dir, "tmp")
+	logsDir := filepath.Join(dir, "logs")
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(inputDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"clip_audio.mp4", "clip_silent.mp4", "ignore.txt"} {
+		if err := os.WriteFile(filepath.Join(inputDir, name), []byte("input-"+name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ffmpegLog := filepath.Join(dir, "ffmpeg.args")
+	exiftoolLog := filepath.Join(dir, "exiftool.args")
+	writeFakeTool(t, filepath.Join(binDir, "ffprobe"), `#!/usr/bin/env bash
+set -euo pipefail
+target="${@: -1}"
+if [[ "$target" == *silent* ]]; then
+  cat <<'JSON'
+{"format":{"duration":"1.000000","bit_rate":"100000","filename":"silent"},"streams":[{"codec_type":"video","codec_name":"h264","profile":"High","width":64,"height":64,"r_frame_rate":"25/1","duration":"1.000000"}]}
+JSON
+else
+  cat <<'JSON'
+{"format":{"duration":"1.000000","bit_rate":"100000","filename":"audio"},"streams":[{"codec_type":"video","codec_name":"h264","profile":"High","width":64,"height":64,"r_frame_rate":"25/1","duration":"1.000000"},{"codec_type":"audio","codec_name":"aac","sample_rate":"44100","channels":2,"duration":"1.000000"}]}
+JSON
+fi
+`)
+	writeFakeTool(t, filepath.Join(binDir, "ffmpeg"), `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$FAKE_FFMPEG_LOG"
+out="${@: -1}"
+mkdir -p "$(dirname "$out")"
+printf 'fake-render:%s\n' "$*" > "$out"
+`)
+	writeFakeTool(t, filepath.Join(binDir, "exiftool"), `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-ver" ]]; then
+  echo "12.00"
+  exit 0
+fi
+printf '%s\n' "$*" >> "$FAKE_EXIFTOOL_LOG"
+`)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_FFMPEG_LOG", ffmpegLog)
+	t.Setenv("FAKE_EXIFTOOL_LOG", exiftoolLog)
+
+	cfg, err := config.ParseFlags([]string{
+		"--input", inputDir,
+		"--output", outputDir,
+		"--tmp", tmpDir,
+		"--logs", logsDir,
+		"--jobs", "2",
+		"--threads-per-job", "1",
+		"--overwrite",
+		"--seed", "99",
+		"--codec-profile", "fast",
+	}, os.Stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureRuntimeDirs(cfg.OutputDir, cfg.TmpDir, cfg.LogsDir); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := scanner.Scan(cfg.InputDir, cfg.Recursive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 2 {
+		t.Fatalf("expected scanner to find 2 supported media files, got %d: %v", len(files), files)
+	}
+
+	jobsList := buildJobs(files, cfg.OutputDir, cfg.LogsDir)
+	jobs := make(chan workerpool.Job)
+	results := make(chan workerpool.Job)
+	workerpool.Run(context.Background(), cfg.Jobs, jobs, results, processingHandler(cfg))
+	go func() {
+		defer close(jobs)
+		for _, job := range jobsList {
+			jobs <- job
+		}
+	}()
+
+	seen := map[string]workerpool.Job{}
+	for result := range results {
+		if result.Status != workerpool.StatusSuccess {
+			t.Fatalf("expected e2e job success for %s, got status=%s err=%v", result.InputPath, result.Status, result.Error)
+		}
+		seen[filepath.Base(result.InputPath)] = result
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected two successful jobs, got %d", len(seen))
+	}
+
+	for _, job := range seen {
+		assertFileExists(t, job.OutputPath)
+		assertFileExists(t, job.RecipePath)
+		assertFileExists(t, perJobLogPath(job.RecipePath))
+		assertRecipeMetadataFullMode(t, job.RecipePath)
+		assertJobLogStages(t, perJobLogPath(job.RecipePath), []string{"tmp", "probe", "recipe", "render", "metadata", "cleanup", "job"})
+	}
+	assertTmpCleaned(t, tmpDir)
+
+	ffmpegArgs := readFile(t, ffmpegLog)
+	for _, name := range []string{"clip_audio", "clip_silent"} {
+		if !strings.Contains(ffmpegArgs, name) {
+			t.Fatalf("expected ffmpeg invocation for %s, got:\n%s", name, ffmpegArgs)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSpace(ffmpegArgs), "\n") {
+		if strings.Contains(line, "clip_audio") && !strings.Contains(line, "-map 0:a:0") {
+			t.Fatalf("expected audio input to map audio stream, got: %s", line)
+		}
+		if strings.Contains(line, "clip_silent") && strings.Contains(line, "-map 0:a:0") {
+			t.Fatalf("expected video-only input to omit audio mapping, got: %s", line)
+		}
+	}
+
+	exiftoolArgs := readFile(t, exiftoolLog)
+	if got := strings.Count(exiftoolArgs, "-all="); got != 2 {
+		t.Fatalf("expected metadata clean phase once per job, got %d entries:\n%s", got, exiftoolArgs)
+	}
+	if got := strings.Count(exiftoolArgs, "-Software="); got != 2 {
+		t.Fatalf("expected metadata diversify phase once per job, got %d entries:\n%s", got, exiftoolArgs)
+	}
+}
+
+func writeFakeTool(t *testing.T, path, script string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertFileExists(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("expected file %s: %v", path, err)
+	}
+	if info.Size() == 0 {
+		t.Fatalf("expected non-empty file %s", path)
+	}
+}
+
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func assertRecipeMetadataFullMode(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec recipe.Recipe
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Metadata.Mode != "clean_diversify" || !rec.Metadata.Clean || len(rec.Metadata.Diversify) == 0 {
+		t.Fatalf("expected full metadata mode in recipe %s, got %#v", path, rec.Metadata)
+	}
+}
+
+func assertJobLogStages(t *testing.T, path string, stages []string) {
+	t.Helper()
+	data := readFile(t, path)
+	seen := map[string]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(data), "\n") {
+		var entry struct {
+			Stage  string `json:"stage"`
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("invalid JSON log line %q: %v", line, err)
+		}
+		if entry.Status == "done" || entry.Status == "written" || entry.Status == "success" || entry.Status == "created" {
+			seen[entry.Stage] = true
+		}
+	}
+	for _, stage := range stages {
+		if !seen[stage] {
+			t.Fatalf("expected stage %q in %s, got log:\n%s", stage, path, data)
+		}
+	}
+}
+
+func assertTmpCleaned(t *testing.T, path string) {
+	t.Helper()
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Fatalf("expected tmp directory to be empty after successful jobs, got %v", names)
 	}
 }
 

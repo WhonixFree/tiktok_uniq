@@ -150,7 +150,25 @@ func main() {
 
 func processingHandler(cfg config.Config) workerpool.Handler {
 	return func(ctx context.Context, job workerpool.Job) workerpool.Job {
+		jobLogPath := perJobLogPath(job.RecipePath)
+		fail := func(stage string, err error) workerpool.Job {
+			if logErr := writeJobLog(jobLogPath, stage, "failed", map[string]any{"error": err.Error()}); logErr != nil {
+				err = errors.Join(err, logErr)
+			}
+			job.Status = workerpool.StatusFailed
+			job.Error = err
+			return job
+		}
+
+		if err := writeJobLog(jobLogPath, "job", "started", map[string]any{"job_id": job.ID, "input": job.InputPath, "output": job.OutputPath}); err != nil {
+			job.Status = workerpool.StatusFailed
+			job.Error = err
+			return job
+		}
 		if err := ctx.Err(); err != nil {
+			if logErr := writeJobLog(jobLogPath, "job", "skipped", map[string]any{"error": err.Error()}); logErr != nil {
+				err = errors.Join(err, logErr)
+			}
 			job.Status = workerpool.StatusSkipped
 			job.Error = err
 			return job
@@ -158,16 +176,18 @@ func processingHandler(cfg config.Config) workerpool.Handler {
 
 		jobTmpDir := filepath.Join(cfg.TmpDir, fmt.Sprintf("job-%d-%s", job.ID, strings.TrimSuffix(filepath.Base(job.InputPath), filepath.Ext(job.InputPath))))
 		if err := os.MkdirAll(jobTmpDir, 0o755); err != nil {
-			job.Status = workerpool.StatusFailed
-			job.Error = err
-			return job
+			return fail("tmp", err)
+		}
+		if err := writeJobLog(jobLogPath, "tmp", "created", map[string]any{"path": jobTmpDir}); err != nil {
+			return fail("tmp", err)
 		}
 
 		probeData, err := probeFunc(ctx, job.InputPath)
 		if err != nil {
-			job.Status = workerpool.StatusFailed
-			job.Error = err
-			return job
+			return fail("probe", err)
+		}
+		if err := writeJobLog(jobLogPath, "probe", "done", map[string]any{"duration": probeData.Duration, "has_audio": probeData.Audio != nil}); err != nil {
+			return fail("probe", err)
 		}
 
 		jobCfg := cfg
@@ -175,42 +195,80 @@ func processingHandler(cfg config.Config) workerpool.Handler {
 		jobCfg.OutputDir = job.OutputPath
 		rec, err := generateRecipeFunc(ctx, jobCfg, probeData, nil)
 		if err != nil {
-			job.Status = workerpool.StatusFailed
-			job.Error = err
-			return job
+			return fail("recipe", err)
 		}
 		rec.InputPath = job.InputPath
 		rec.OutputPath = job.OutputPath
 
 		if err := writeRecipe(job.RecipePath, rec); err != nil {
-			job.Status = workerpool.StatusFailed
-			job.Error = err
-			return job
+			return fail("recipe", err)
+		}
+		if err := writeJobLog(jobLogPath, "recipe", "written", map[string]any{"path": job.RecipePath}); err != nil {
+			return fail("recipe", err)
 		}
 
 		renderedPath := filepath.Join(jobTmpDir, "rendered.mp4")
 		renderJob := job
 		renderJob.OutputPath = renderedPath
 		if err := renderFunc(ctx, cfg, renderJob, probeData, rec); err != nil {
-			job.Status = workerpool.StatusFailed
-			job.Error = err
-			return job
+			return fail("render", err)
+		}
+		if err := writeJobLog(jobLogPath, "render", "done", map[string]any{"path": renderedPath}); err != nil {
+			return fail("render", err)
 		}
 
 		if err := metadataFunc(ctx, cfg, job, rec, renderedPath); err != nil {
-			job.Status = workerpool.StatusFailed
-			job.Error = err
-			return job
+			return fail("metadata", err)
+		}
+		if err := writeJobLog(jobLogPath, "metadata", "done", map[string]any{"mode": rec.Metadata.Mode, "output": job.OutputPath}); err != nil {
+			return fail("metadata", err)
 		}
 
 		if err := os.RemoveAll(jobTmpDir); err != nil {
-			job.Status = workerpool.StatusFailed
-			job.Error = err
-			return job
+			return fail("cleanup", err)
+		}
+		if err := writeJobLog(jobLogPath, "cleanup", "done", map[string]any{"path": jobTmpDir}); err != nil {
+			return fail("cleanup", err)
 		}
 		job.Status = workerpool.StatusSuccess
+		if err := writeJobLog(jobLogPath, "job", "success", map[string]any{"job_id": job.ID}); err != nil {
+			return fail("job", err)
+		}
 		return job
 	}
+}
+
+func perJobLogPath(recipePath string) string {
+	if strings.HasSuffix(recipePath, ".recipe.json") {
+		return strings.TrimSuffix(recipePath, ".recipe.json") + ".log"
+	}
+	return recipePath + ".log"
+}
+
+func writeJobLog(path, stage, status string, fields map[string]any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	entry := map[string]any{
+		"time":   time.Now().UTC().Format(time.RFC3339Nano),
+		"stage":  stage,
+		"status": status,
+	}
+	for key, value := range fields {
+		entry[key] = value
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.Write(data)
+	return err
 }
 
 func writeRecipe(path string, rec *recipe.Recipe) error {
