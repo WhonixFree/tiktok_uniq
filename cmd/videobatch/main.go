@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,7 +18,10 @@ import (
 	"time"
 
 	"videobatch/internal/config"
+	"videobatch/internal/ffprobe"
 	"videobatch/internal/logging"
+	"videobatch/internal/recipe"
+	"videobatch/internal/render"
 	"videobatch/internal/scanner"
 	"videobatch/internal/workerpool"
 )
@@ -109,7 +113,7 @@ func main() {
 
 	jobs := make(chan workerpool.Job)
 	results := make(chan workerpool.Job)
-	workerpool.Run(runCtx, cfg.Jobs, jobs, results, workerpool.DefaultHandler)
+	workerpool.Run(runCtx, cfg.Jobs, jobs, results, processingHandler(cfg))
 
 	go func() {
 		defer close(jobs)
@@ -130,6 +134,77 @@ func main() {
 	if err := runCtx.Err(); err != nil {
 		logger.Warn("shutdown completed after interrupt", "reason", err)
 	}
+}
+
+func processingHandler(cfg config.Config) workerpool.Handler {
+	return func(ctx context.Context, job workerpool.Job) workerpool.Job {
+		if err := ctx.Err(); err != nil {
+			job.Status = workerpool.StatusSkipped
+			job.Error = err
+			return job
+		}
+
+		jobTmpDir := filepath.Join(cfg.TmpDir, fmt.Sprintf("job-%d-%s", job.ID, strings.TrimSuffix(filepath.Base(job.InputPath), filepath.Ext(job.InputPath))))
+		if err := os.MkdirAll(jobTmpDir, 0o755); err != nil {
+			job.Status = workerpool.StatusFailed
+			job.Error = err
+			return job
+		}
+
+		probeData, err := ffprobe.Probe(ctx, job.InputPath)
+		if err != nil {
+			job.Status = workerpool.StatusFailed
+			job.Error = err
+			return job
+		}
+
+		jobCfg := cfg
+		jobCfg.InputDir = job.InputPath
+		jobCfg.OutputDir = job.OutputPath
+		rec, err := recipe.GenerateWithSmartAnalyzer(ctx, jobCfg, probeData, nil)
+		if err != nil {
+			job.Status = workerpool.StatusFailed
+			job.Error = err
+			return job
+		}
+		rec.InputPath = job.InputPath
+		rec.OutputPath = job.OutputPath
+
+		if err := writeRecipe(job.RecipePath, rec); err != nil {
+			job.Status = workerpool.StatusFailed
+			job.Error = err
+			return job
+		}
+
+		runner := render.Runner{}
+		if err := runner.Render(ctx, cfg, job, probeData, rec); err != nil {
+			job.Status = workerpool.StatusFailed
+			job.Error = err
+			return job
+		}
+
+		if cfg.Cleanup {
+			if err := os.RemoveAll(jobTmpDir); err != nil {
+				job.Status = workerpool.StatusFailed
+				job.Error = err
+				return job
+			}
+		}
+		job.Status = workerpool.StatusSuccess
+		return job
+	}
+}
+
+func writeRecipe(path string, rec *recipe.Recipe) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o644)
 }
 
 func ensureRuntimeDirs(paths ...string) error {
