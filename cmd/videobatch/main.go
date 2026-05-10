@@ -32,6 +32,8 @@ type dependency struct {
 	InstallHint string
 }
 
+var startupDependencyProvider = startupDependencies
+
 func main() {
 	bootstrapLogger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
@@ -142,7 +144,7 @@ func ensureRuntimeDirs(paths ...string) error {
 func runStartupChecks(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	var errs []error
 
-	for _, dep := range startupDependencies(cfg) {
+	for _, dep := range startupDependencyProvider(cfg) {
 		if err := checkExecutable(ctx, dep); err != nil {
 			if dep.Required {
 				errs = append(errs, err)
