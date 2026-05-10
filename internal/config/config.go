@@ -46,7 +46,6 @@ type Config struct {
 	CropEnabled    bool
 	CropMinPercent float64
 	CropMaxPercent float64
-	CropPosition   string
 
 	ColorPreset    string
 	ColorStrength  string

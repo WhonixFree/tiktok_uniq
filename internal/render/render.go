@@ -135,7 +135,14 @@ func BuildPipeline(cfg config.Config, probe *ffprobe.ProbeData, rec *recipe.Reci
 	videoSpeed := speedFactor(rec.VideoSpeed.BasePercent)
 	overlayOpacity := clampFloat(cfg.StreamOverlayOpacity, 0, 1)
 
-	geometryColor := fmt.Sprintf("[0:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,%s,format=rgba[gcolor]", colorFilter(cfg.ColorStrength))
+	geometryInput := "[0:v]"
+	geometrySteps := []string{}
+	if cfg.CropEnabled {
+		crop := cropGeometry(width, height, cfg.CropMaxPercent)
+		geometrySteps = append(geometrySteps, fmt.Sprintf("crop=%d:%d:%d:%d", crop.w, crop.h, crop.x, crop.y))
+	}
+	geometrySteps = append(geometrySteps, "scale=trunc(iw/2)*2:trunc(ih/2)*2", "setsar=1", colorFilter(cfg.ColorStrength), "format=rgba")
+	geometryColor := fmt.Sprintf("%s%s[gcolor]", geometryInput, strings.Join(geometrySteps, ","))
 	blur := fmt.Sprintf("[gcolor]gblur=sigma=%.4f[blurred]", blurSigma)
 	pixel := fmt.Sprintf("[blurred]split=2[pixelbase][pixelsrc];[pixelsrc]crop=%d:%d:%d:%d,format=rgba,colorchannelmixer=aa=%.6f[pixelpatch];[pixelbase][pixelpatch]overlay=%d:%d[pixel]", area.w, area.h, neighborX, neighborY, replaceAlpha, area.x, area.y)
 	temporal := fmt.Sprintf("[pixel]setpts=PTS/%.8f[temporal]", videoSpeed)
@@ -225,6 +232,20 @@ func colorFilter(strength string) string {
 }
 
 type rect struct{ x, y, w, h int }
+
+func cropGeometry(width, height int, percent float64) rect {
+	ratio := cropRatio(percent)
+	keepRatio := clampFloat(1-ratio, 0.01, 1)
+	w := evenPositive(int64(math.Round(float64(width) * keepRatio)))
+	h := evenPositive(int64(math.Round(float64(height) * keepRatio)))
+	w = clamp(w, 2, width)
+	h = clamp(h, 2, height)
+	return rect{x: (width - w) / 2, y: (height - h) / 2, w: w, h: h}
+}
+
+func cropRatio(percent float64) float64 {
+	return percent / 100.0
+}
 
 func pixelArea(pixel recipe.PixelReplacement, width, height int) rect {
 	if pixel.Mode == "smart" && pixel.AreaWidth > 0 && pixel.AreaHeight > 0 {

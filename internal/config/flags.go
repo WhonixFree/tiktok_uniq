@@ -34,7 +34,6 @@ func ParseFlags(args []string, output io.Writer) (Config, error) {
 	fs.BoolVar(&cfg.CropEnabled, "crop", false, "enable crop")
 	fs.Float64Var(&cfg.CropMinPercent, "crop-min-percent", 0, "minimum crop percent")
 	fs.Float64Var(&cfg.CropMaxPercent, "crop-max-percent", 0, "maximum crop percent")
-	fs.StringVar(&cfg.CropPosition, "crop-position", "center", "crop position: random|center|top|bottom")
 
 	fs.StringVar(&cfg.ColorPreset, "color-preset", "off", "color preset name or random")
 	fs.StringVar(&cfg.ColorStrength, "color-strength", "soft", "color strength: soft|medium|hard")
@@ -88,38 +87,108 @@ func ParseFlags(args []string, output io.Writer) (Config, error) {
 	fs.IntVar(&cfg.NeighborOffsetMax, "neighbor-offset-max", 2, "neighbor offset max")
 	fs.StringVar(&cfg.MetadataFullMode, "metadata-full-mode", "clean_diversify", "metadata full mode")
 
-	if err := fs.Parse(args); err != nil { return Config{}, err }
-	if fs.NArg() > 0 { return Config{}, fmt.Errorf("unexpected positional arguments: %v", fs.Args()) }
-	if err := cfg.Validate(); err != nil { return Config{}, err }
+	if err := fs.Parse(args); err != nil {
+		return Config{}, err
+	}
+	if fs.NArg() > 0 {
+		return Config{}, fmt.Errorf("unexpected positional arguments: %v", fs.Args())
+	}
+	if err := cfg.Validate(); err != nil {
+		return Config{}, err
+	}
 	return cfg, nil
 }
 
-func (cfg Config) Validate() error { var errs []error
- if cfg.InputDir==""{errs=append(errs,errors.New("--input must not be empty"))}
- if cfg.OutputDir==""{errs=append(errs,errors.New("--output must not be empty"))}
- if cfg.Jobs<1{errs=append(errs,errors.New("--jobs must be >= 1"))}
- if cfg.ThreadsPerJob<1{errs=append(errs,errors.New("--threads-per-job must be >= 1"))}
- if cfg.TrimStartMax<cfg.TrimStartMin||cfg.TrimEndMax<cfg.TrimEndMin{errs=append(errs,errors.New("trim max must be >= min"))}
- if cfg.CropEnabled { if cfg.CropMinPercent<=0||cfg.CropMaxPercent<=0||cfg.CropMinPercent>=100||cfg.CropMaxPercent>=100||cfg.CropMaxPercent<cfg.CropMinPercent { errs=append(errs,errors.New("invalid crop percent range")) } }
- if !oneOf(cfg.AVSineMode,"lock","independent"){errs=append(errs,errors.New("--av-sine-mode must be one of lock|independent"))}
- if err:=validatePercentRange(cfg.AudioBaseSpeed.MinPercent,cfg.AudioBaseSpeed.MaxPercent,"audio base speed"); err!=nil {errs=append(errs,err)}
- if err:=validatePercentRange(cfg.VideoBaseSpeed.MinPercent,cfg.VideoBaseSpeed.MaxPercent,"video base speed"); err!=nil {errs=append(errs,err)}
- if err:=validateMinMax(cfg.AudioSine.AmplitudeMin,cfg.AudioSine.AmplitudeMax,"audio sine amplitude"); err!=nil {errs=append(errs,err)}
- if err:=validateMinMax(cfg.VideoSine.AmplitudeMin,cfg.VideoSine.AmplitudeMax,"video sine amplitude"); err!=nil {errs=append(errs,err)}
- if err:=validateMinMax(cfg.AudioSine.FrequencyMin,cfg.AudioSine.FrequencyMax,"audio sine frequency"); err!=nil {errs=append(errs,err)}
- if err:=validateMinMax(cfg.VideoSine.FrequencyMin,cfg.VideoSine.FrequencyMax,"video sine frequency"); err!=nil {errs=append(errs,err)}
- if cfg.FreezeCount.Min<0||cfg.FreezeCount.Max<cfg.FreezeCount.Min { errs=append(errs,errors.New("invalid freeze count range")) }
- if cfg.ReplaceCount.Min<0||cfg.ReplaceCount.Max<cfg.ReplaceCount.Min { errs=append(errs,errors.New("invalid replace count range")) }
- if cfg.MinEventDistanceSec<0 { errs=append(errs,errors.New("--min-event-distance-sec must be >= 0")) }
- if err:=validatePercentRange(cfg.PixelReplacePercent.Min,cfg.PixelReplacePercent.Max,"pixel replace percent"); err!=nil {errs=append(errs,err)}
- if err:=validateMinMax(cfg.PixelBlurSigma.Min,cfg.PixelBlurSigma.Max,"pixel blur sigma"); err!=nil {errs=append(errs,err)}
- if !oneOf(cfg.PixelReplaceMode,"edge","smart"){errs=append(errs,errors.New("--pixel-replace-mode must be edge|smart"))}
- if err:=validatePercentRange(cfg.PixelAreaEdgeInset.Min,cfg.PixelAreaEdgeInset.Max,"pixel edge inset"); err!=nil {errs=append(errs,err)}
- if cfg.NeighborOffsetMin<0 || cfg.NeighborOffsetMax<cfg.NeighborOffsetMin { errs=append(errs,errors.New("invalid neighbor offset range")) }
- if cfg.MetadataFullMode!="clean_diversify" { errs=append(errs,errors.New("--metadata-full-mode must be clean_diversify")) }
- return errors.Join(errs...)
+func (cfg Config) Validate() error {
+	var errs []error
+	if cfg.InputDir == "" {
+		errs = append(errs, errors.New("--input must not be empty"))
+	}
+	if cfg.OutputDir == "" {
+		errs = append(errs, errors.New("--output must not be empty"))
+	}
+	if cfg.Jobs < 1 {
+		errs = append(errs, errors.New("--jobs must be >= 1"))
+	}
+	if cfg.ThreadsPerJob < 1 {
+		errs = append(errs, errors.New("--threads-per-job must be >= 1"))
+	}
+	if cfg.TrimStartMax < cfg.TrimStartMin || cfg.TrimEndMax < cfg.TrimEndMin {
+		errs = append(errs, errors.New("trim max must be >= min"))
+	}
+	if cfg.CropEnabled {
+		if cfg.CropMinPercent <= 0 || cfg.CropMaxPercent <= 0 || cfg.CropMinPercent >= 100 || cfg.CropMaxPercent >= 100 || cfg.CropMaxPercent < cfg.CropMinPercent {
+			errs = append(errs, errors.New("invalid crop percent range"))
+		}
+	}
+	if !oneOf(cfg.AVSineMode, "lock", "independent") {
+		errs = append(errs, errors.New("--av-sine-mode must be one of lock|independent"))
+	}
+	if err := validatePercentRange(cfg.AudioBaseSpeed.MinPercent, cfg.AudioBaseSpeed.MaxPercent, "audio base speed"); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validatePercentRange(cfg.VideoBaseSpeed.MinPercent, cfg.VideoBaseSpeed.MaxPercent, "video base speed"); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateMinMax(cfg.AudioSine.AmplitudeMin, cfg.AudioSine.AmplitudeMax, "audio sine amplitude"); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateMinMax(cfg.VideoSine.AmplitudeMin, cfg.VideoSine.AmplitudeMax, "video sine amplitude"); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateMinMax(cfg.AudioSine.FrequencyMin, cfg.AudioSine.FrequencyMax, "audio sine frequency"); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateMinMax(cfg.VideoSine.FrequencyMin, cfg.VideoSine.FrequencyMax, "video sine frequency"); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.FreezeCount.Min < 0 || cfg.FreezeCount.Max < cfg.FreezeCount.Min {
+		errs = append(errs, errors.New("invalid freeze count range"))
+	}
+	if cfg.ReplaceCount.Min < 0 || cfg.ReplaceCount.Max < cfg.ReplaceCount.Min {
+		errs = append(errs, errors.New("invalid replace count range"))
+	}
+	if cfg.MinEventDistanceSec < 0 {
+		errs = append(errs, errors.New("--min-event-distance-sec must be >= 0"))
+	}
+	if err := validatePercentRange(cfg.PixelReplacePercent.Min, cfg.PixelReplacePercent.Max, "pixel replace percent"); err != nil {
+		errs = append(errs, err)
+	}
+	if err := validateMinMax(cfg.PixelBlurSigma.Min, cfg.PixelBlurSigma.Max, "pixel blur sigma"); err != nil {
+		errs = append(errs, err)
+	}
+	if !oneOf(cfg.PixelReplaceMode, "edge", "smart") {
+		errs = append(errs, errors.New("--pixel-replace-mode must be edge|smart"))
+	}
+	if err := validatePercentRange(cfg.PixelAreaEdgeInset.Min, cfg.PixelAreaEdgeInset.Max, "pixel edge inset"); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.NeighborOffsetMin < 0 || cfg.NeighborOffsetMax < cfg.NeighborOffsetMin {
+		errs = append(errs, errors.New("invalid neighbor offset range"))
+	}
+	if cfg.MetadataFullMode != "clean_diversify" {
+		errs = append(errs, errors.New("--metadata-full-mode must be clean_diversify"))
+	}
+	return errors.Join(errs...)
 }
 
-func validateMinMax(min, max float64, name string) error { if min<0 || max<min { return fmt.Errorf("invalid %s range", name)}; return nil }
-func validatePercentRange(min, max float64, name string) error { if min<0 || max<min || max>100 { return fmt.Errorf("invalid %s percent range", name)}; return nil }
-func oneOf(value string, allowed ...string) bool { for _, c := range allowed { if value==c { return true } }; return false }
+func validateMinMax(min, max float64, name string) error {
+	if min < 0 || max < min {
+		return fmt.Errorf("invalid %s range", name)
+	}
+	return nil
+}
+func validatePercentRange(min, max float64, name string) error {
+	if min < 0 || max < min || max > 100 {
+		return fmt.Errorf("invalid %s percent range", name)
+	}
+	return nil
+}
+func oneOf(value string, allowed ...string) bool {
+	for _, c := range allowed {
+		if value == c {
+			return true
+		}
+	}
+	return false
+}
