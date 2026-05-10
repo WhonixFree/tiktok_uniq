@@ -20,6 +20,7 @@ import (
 	"videobatch/internal/config"
 	"videobatch/internal/ffprobe"
 	"videobatch/internal/logging"
+	"videobatch/internal/metadata"
 	"videobatch/internal/recipe"
 	"videobatch/internal/render"
 	"videobatch/internal/scanner"
@@ -27,6 +28,17 @@ import (
 )
 
 const startupTimeout = 5 * time.Second
+
+var (
+	probeFunc          = ffprobe.Probe
+	generateRecipeFunc = recipe.GenerateWithSmartAnalyzer
+	renderFunc         = func(ctx context.Context, cfg config.Config, job workerpool.Job, probeData *ffprobe.ProbeData, rec *recipe.Recipe) error {
+		return render.Runner{}.Render(ctx, cfg, job, probeData, rec)
+	}
+	metadataFunc = func(ctx context.Context, cfg config.Config, job workerpool.Job, rec *recipe.Recipe, renderedPath string) error {
+		return metadata.Runner{}.Process(ctx, cfg, job, rec, renderedPath)
+	}
+)
 
 type dependency struct {
 	Name        string
@@ -151,7 +163,7 @@ func processingHandler(cfg config.Config) workerpool.Handler {
 			return job
 		}
 
-		probeData, err := ffprobe.Probe(ctx, job.InputPath)
+		probeData, err := probeFunc(ctx, job.InputPath)
 		if err != nil {
 			job.Status = workerpool.StatusFailed
 			job.Error = err
@@ -161,7 +173,7 @@ func processingHandler(cfg config.Config) workerpool.Handler {
 		jobCfg := cfg
 		jobCfg.InputDir = job.InputPath
 		jobCfg.OutputDir = job.OutputPath
-		rec, err := recipe.GenerateWithSmartAnalyzer(ctx, jobCfg, probeData, nil)
+		rec, err := generateRecipeFunc(ctx, jobCfg, probeData, nil)
 		if err != nil {
 			job.Status = workerpool.StatusFailed
 			job.Error = err
@@ -176,19 +188,25 @@ func processingHandler(cfg config.Config) workerpool.Handler {
 			return job
 		}
 
-		runner := render.Runner{}
-		if err := runner.Render(ctx, cfg, job, probeData, rec); err != nil {
+		renderedPath := filepath.Join(jobTmpDir, "rendered.mp4")
+		renderJob := job
+		renderJob.OutputPath = renderedPath
+		if err := renderFunc(ctx, cfg, renderJob, probeData, rec); err != nil {
 			job.Status = workerpool.StatusFailed
 			job.Error = err
 			return job
 		}
 
-		if cfg.Cleanup {
-			if err := os.RemoveAll(jobTmpDir); err != nil {
-				job.Status = workerpool.StatusFailed
-				job.Error = err
-				return job
-			}
+		if err := metadataFunc(ctx, cfg, job, rec, renderedPath); err != nil {
+			job.Status = workerpool.StatusFailed
+			job.Error = err
+			return job
+		}
+
+		if err := os.RemoveAll(jobTmpDir); err != nil {
+			job.Status = workerpool.StatusFailed
+			job.Error = err
+			return job
 		}
 		job.Status = workerpool.StatusSuccess
 		return job

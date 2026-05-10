@@ -171,3 +171,18 @@ func TestGeneratePixelSmartModeFallsBackOnLowConfidence(t *testing.T) {
 		t.Fatal("expected low-confidence fallback reason")
 	}
 }
+
+func TestGenerateMetadataFullModeCleanAndDiversify(t *testing.T) {
+	cfg := baseCfg()
+	probe := &ffprobe.ProbeData{Duration: 5, Video: &ffprobe.VideoStream{Fps: 30}}
+	rec, err := Generate(cfg, probe)
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	if rec.Metadata.Mode != "clean_diversify" || !rec.Metadata.Clean {
+		t.Fatalf("expected clean_diversify metadata with clean phase, got %+v", rec.Metadata)
+	}
+	if len(rec.Metadata.Diversify) == 0 {
+		t.Fatal("expected diversify tags")
+	}
+}
