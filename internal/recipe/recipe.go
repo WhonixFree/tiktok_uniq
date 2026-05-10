@@ -4,6 +4,7 @@ import (
 	"errors"
 	"math"
 	"math/rand"
+	"sort"
 	"reflect"
 	"videobatch/internal/config"
 	"videobatch/internal/ffprobe"
@@ -47,8 +48,9 @@ func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
 	rec.VideoSpeed = SpeedConfig{BasePercent: randSignedPercent(rng, cfg.VideoBaseSpeed), Sine: videoSine}
 
 	totalFrames := int64(math.Max(1, probe.Duration*probe.Video.Fps))
-	rec.FreezeEvents = buildEvents(rng, totalFrames, cfg.FreezeCount.Min, cfg.FreezeCount.Max, cfg.MinEventDistanceSec, probe.Video.Fps, false)
-	rec.ReplaceEvents = buildEvents(rng, totalFrames, cfg.ReplaceCount.Min, cfg.ReplaceCount.Max, cfg.MinEventDistanceSec, probe.Video.Fps, true)
+	minDistFrames := int64(cfg.MinEventDistanceSec * probe.Video.Fps)
+	rec.FreezeEvents = buildEvents(rng, totalFrames, cfg.FreezeCount.Min, cfg.FreezeCount.Max, minDistFrames, nil)
+	rec.ReplaceEvents = buildReplaceEvents(rng, totalFrames, cfg.ReplaceCount.Min, cfg.ReplaceCount.Max, minDistFrames, rec.FreezeEvents)
 
 	rec.PixelReplacement = PixelReplacement{Percent: randPercent(rng, cfg.PixelReplacePercent.Min, cfg.PixelReplacePercent.Max), Mode: cfg.PixelReplaceMode, AreaInsetPercent: randPercent(rng, cfg.PixelAreaEdgeInset.Min, cfg.PixelAreaEdgeInset.Max), SmartGrid: cfg.PixelAreaSmartGrid, NeighborOffset: randInt(rng, cfg.NeighborOffsetMin, cfg.NeighborOffsetMax)}
 	return rec, nil
@@ -59,23 +61,42 @@ func randSine(rng *rand.Rand, r config.SineParamsRange) SineParams { return Sine
 func randPercent(rng *rand.Rand, min,max float64) float64 { return min + rng.Float64()*(max-min) }
 func randInt(rng *rand.Rand, min,max int) int { if max<=min { return min }; return min+rng.Intn(max-min+1)}
 
-func buildEvents(rng *rand.Rand, totalFrames int64, minCount,maxCount int, minDistanceSec,fps float64, donor bool) []Event {
+func buildEvents(rng *rand.Rand, totalFrames int64, minCount,maxCount int, minDist int64, blocked []Event) []Event {
 	count := minCount
 	if maxCount>minCount { count += rng.Intn(maxCount-minCount+1) }
 	if count <= 0 { return nil }
-	minDist := int64(minDistanceSec * fps)
 	used := map[int64]bool{}
+	for _, ev := range blocked { used[ev.Frame] = true }
 	out := make([]Event,0,count)
-	for len(out) < count {
+	maxAttempts := int(math.Max(float64(totalFrames*8), 64))
+	attempts := 0
+	for len(out) < count && attempts < maxAttempts {
+		attempts++
 		candidate := int64(rng.Int63n(totalFrames))
 		ok := true
 		for _, ev := range out { if abs64(ev.Frame-candidate) < minDist { ok=false; break } }
+		for _, ev := range blocked { if abs64(ev.Frame-candidate) < minDist { ok=false; break } }
 		if !ok || used[candidate] { continue }
 		used[candidate] = true
-		ev := Event{Frame:candidate}
-		if donor { for { d:=int64(rng.Int63n(totalFrames)); if !used[d] && d!=candidate { used[d]=true; ev.DonorFrame=d; break } } }
-		out = append(out, ev)
+		out = append(out, Event{Frame:candidate})
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Frame < out[j].Frame })
 	return out
+}
+
+func buildReplaceEvents(rng *rand.Rand, totalFrames int64, minCount,maxCount int, minDist int64, freezeEvents []Event) []Event {
+	replace := buildEvents(rng, totalFrames, minCount, maxCount, minDist, freezeEvents)
+	if len(replace) == 0 { return nil }
+	usedDonors := map[int64]bool{}
+	for i := range replace {
+		for {
+			donor := int64(rng.Int63n(totalFrames))
+			if donor == replace[i].Frame || usedDonors[donor] { continue }
+			usedDonors[donor] = true
+			replace[i].DonorFrame = donor
+			break
+		}
+	}
+	return replace
 }
 func abs64(v int64) int64 { if v<0 { return -v }; return v }
