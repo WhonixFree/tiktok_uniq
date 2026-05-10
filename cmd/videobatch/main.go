@@ -24,6 +24,11 @@ import (
 
 const startupTimeout = 5 * time.Second
 
+var (
+	checkExecutableFn     = checkExecutable
+	checkPythonPackagesFn = checkPythonPackages
+)
+
 type dependency struct {
 	Name        string
 	Command     string
@@ -143,7 +148,7 @@ func runStartupChecks(ctx context.Context, cfg config.Config, logger *slog.Logge
 	var errs []error
 
 	for _, dep := range startupDependencies(cfg) {
-		if err := checkExecutable(ctx, dep); err != nil {
+		if err := checkExecutableFn(ctx, dep); err != nil {
 			if dep.Required {
 				errs = append(errs, err)
 				logger.Error("dependency missing", "name", dep.Name, "error", err)
@@ -156,14 +161,14 @@ func runStartupChecks(ctx context.Context, cfg config.Config, logger *slog.Logge
 	}
 
 	if cfg.AudioEnvelope == "python" {
-		if err := checkPythonPackages(ctx, []string{"numpy", "scipy", "soundfile"}); err != nil {
+		if err := checkPythonPackagesFn(ctx, []string{"numpy", "scipy", "soundfile"}); err != nil {
 			errs = append(errs, fmt.Errorf("python audio envelope dependencies: %w", err))
 		} else {
 			logger.Info("python audio envelope dependencies available")
 		}
 	}
 	if cfg.Captions == "auto" {
-		if err := checkPythonPackages(ctx, []string{"faster-whisper", "pysubs2"}); err != nil {
+		if err := checkPythonPackagesFn(ctx, []string{"faster-whisper", "pysubs2"}); err != nil {
 			errs = append(errs, fmt.Errorf("python caption dependencies: %w", err))
 		} else {
 			logger.Info("python caption dependencies available")
