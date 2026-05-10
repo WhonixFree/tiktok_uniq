@@ -40,7 +40,20 @@ type PixelReplacement struct {
 	NeighborOffset      int
 }
 
-type Metadata struct{ Mode string }
+type MetadataTag struct {
+	Name  string
+	Value string
+}
+
+type Metadata struct {
+	Mode      string
+	Clean     bool
+	Diversify []MetadataTag
+}
+
+func (m Metadata) DiversifyTags() []MetadataTag {
+	return append([]MetadataTag(nil), m.Diversify...)
+}
 
 type Recipe struct {
 	InputPath, OutputPath  string
@@ -65,7 +78,7 @@ func GenerateWithSmartAnalyzer(ctx context.Context, cfg config.Config, probe *ff
 		return nil, errors.New("recipe config is nil")
 	}
 	rng := rand.New(rand.NewSource(cfg.Seed))
-	rec := &Recipe{InputPath: cfg.InputDir, OutputPath: cfg.OutputDir, AVSineMode: cfg.AVSineMode, MinEventDistanceSec: cfg.MinEventDistanceSec, Metadata: Metadata{Mode: cfg.MetadataFullMode}}
+	rec := &Recipe{InputPath: cfg.InputDir, OutputPath: cfg.OutputDir, AVSineMode: cfg.AVSineMode, MinEventDistanceSec: cfg.MinEventDistanceSec, Metadata: metadataFull(rng, cfg.MetadataFullMode)}
 
 	audioSine := randSine(rng, cfg.AudioSine)
 	videoSine := randSine(rng, cfg.VideoSine)
@@ -94,6 +107,24 @@ func GenerateWithSmartAnalyzer(ctx context.Context, cfg config.Config, probe *ff
 		applySmartArea(ctx, rec, cfg, probe, analyzer)
 	}
 	return rec, nil
+}
+
+func metadataFull(rng *rand.Rand, mode string) Metadata {
+	baseDay := 1 + rng.Intn(28)
+	hour := rng.Intn(24)
+	minute := rng.Intn(60)
+	second := rng.Intn(60)
+	date := fmt.Sprintf("2024:01:%02d %02d:%02d:%02d", baseDay, hour, minute, second)
+	return Metadata{
+		Mode:  mode,
+		Clean: true,
+		Diversify: []MetadataTag{
+			{Name: "Software", Value: fmt.Sprintf("videobatch-%06d", rng.Intn(1000000))},
+			{Name: "Comment", Value: fmt.Sprintf("recipe-%08x", rng.Uint32())},
+			{Name: "CreateDate", Value: date},
+			{Name: "ModifyDate", Value: date},
+		},
+	}
 }
 
 func applySmartArea(ctx context.Context, rec *Recipe, cfg config.Config, probe *ffprobe.ProbeData, analyzer pixel.Analyzer) {
