@@ -84,6 +84,37 @@ func TestBuildPipelineFilterGraphKeepsEffectOrder(t *testing.T) {
 	}
 }
 
+func TestBuildPipelineSkipsCropWhenCropDisabled(t *testing.T) {
+	cfg := testConfig()
+	cfg.CropEnabled = false
+	cfg.CropMaxPercent = 2
+
+	pipeline, err := BuildPipeline(cfg, testProbe(true), testRecipe())
+	if err != nil {
+		t.Fatalf("BuildPipeline failed: %v", err)
+	}
+	if strings.Contains(pipeline.FilterGraph, "[0:v]crop=") {
+		t.Fatalf("crop filter must not be emitted when crop is disabled: %s", pipeline.FilterGraph)
+	}
+}
+
+func TestBuildPipelineUsesPercentDividedByHundredForCrop(t *testing.T) {
+	cfg := testConfig()
+	cfg.CropEnabled = true
+	cfg.CropMaxPercent = 2
+
+	pipeline, err := BuildPipeline(cfg, testProbe(true), testRecipe())
+	if err != nil {
+		t.Fatalf("BuildPipeline failed: %v", err)
+	}
+	if !strings.Contains(pipeline.FilterGraph, "crop=62:62:1:1") {
+		t.Fatalf("expected 2%% crop to keep 98%% of 64x64 frame, got: %s", pipeline.FilterGraph)
+	}
+	if got := cropRatio(2); got != 0.02 {
+		t.Fatalf("cropRatio(2) = %v, want 0.02", got)
+	}
+}
+
 func TestRenderIntegrationValidatesOutputIntegrityAndAVSync(t *testing.T) {
 	ffmpegPath, err := exec.LookPath("ffmpeg")
 	if err != nil {

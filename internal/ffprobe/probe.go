@@ -105,6 +105,10 @@ func Probe(ctx context.Context, filePath string) (*ProbeData, error) {
 		return nil, ErrParseError
 	}
 
+	return parseProbeData(raw)
+}
+
+func parseProbeData(raw dtoRoot) (*ProbeData, error) {
 	res := &ProbeData{}
 
 	dur, err := strconv.ParseFloat(raw.Format.Duration, 64)
@@ -146,7 +150,7 @@ func Probe(ctx context.Context, filePath string) (*ProbeData, error) {
 			}
 		}
 	}
-	if res.Video == nil || res.Audio == nil {
+	if res.Video == nil {
 		return nil, ErrInvalidMedia
 	}
 
