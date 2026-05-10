@@ -2,258 +2,80 @@ package recipe
 
 import (
 	"errors"
-	"fmt"
+	"math"
 	"math/rand"
-	"os"
-	"path/filepath"
 	"reflect"
-	"strings"
 	"videobatch/internal/config"
 	"videobatch/internal/ffprobe"
 )
 
+type SineParams struct { Amplitude, Frequency, Phase float64 }
+type SpeedConfig struct { BasePercent float64; Sine SineParams }
+type Event struct { Frame int64; DonorFrame int64 }
+
+type PixelReplacement struct {
+	Percent float64
+	Mode string
+	AreaInsetPercent float64
+	SmartGrid int
+	NeighborOffset int
+}
+
+type Metadata struct { Mode string }
+
 type Recipe struct {
-	InputPath  string
-	OutputPath string
-
-	TrimStart float64
-	TrimEnd   float64
-
-	CropW int64
-	CropH int64
-	CropX int64
-	CropY int64
-
-	ColorPresetPath string
-	ColorStrength   float64
-
-	CaptionsEnabled     bool
-	CaptionTemplatePath string
-	CaptionLanguage     string
-	CaptionModel        string
-
-	AudioEnvelopeEnabled bool
-	AudioEnvelope        string
-
-	MusicEnabled bool
-	MusicPath    string
-	MusicVolume  float64
-
-	DuckingEnabled bool
-	DuckRatio      float64
-	DuckAttackMS   int
-	DuckReleaseMS  int
-
-	StreamOverlayPath string
-	OverlayOpacity    float64
-
-	TemporalShift float64
-	FpsTweak      float64
-	VideoCodec    string
-	AudioCodec    string
-
-	Profile string
+	InputPath, OutputPath string
+	AudioSpeed, VideoSpeed SpeedConfig
+	AVSineMode string
+	FreezeEvents []Event
+	ReplaceEvents []Event
+	MinEventDistanceSec float64
+	PixelReplacement PixelReplacement
+	Metadata Metadata
 }
 
 func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
-	if probe == nil {
-		return nil, errors.New("recipe is nil")
-	}
-	if reflect.DeepEqual(cfg, config.Config{}) {
-		return nil, errors.New("recipe config is nil")
-	}
-
-	rec := Recipe{}
+	if probe == nil { return nil, errors.New("recipe is nil") }
+	if reflect.DeepEqual(cfg, config.Config{}) { return nil, errors.New("recipe config is nil") }
 	rng := rand.New(rand.NewSource(cfg.Seed))
+	rec := &Recipe{InputPath: cfg.InputDir, OutputPath: cfg.OutputDir, AVSineMode: cfg.AVSineMode, MinEventDistanceSec: cfg.MinEventDistanceSec, Metadata: Metadata{Mode: cfg.MetadataFullMode}}
 
-	rec.InputPath = cfg.InputDir
-	rec.OutputPath = cfg.OutputDir
+	audioSine := randSine(rng, cfg.AudioSine)
+	videoSine := randSine(rng, cfg.VideoSine)
+	if cfg.AVSineMode == "lock" { videoSine = audioSine }
+	rec.AudioSpeed = SpeedConfig{BasePercent: randSignedPercent(rng, cfg.AudioBaseSpeed), Sine: audioSine}
+	rec.VideoSpeed = SpeedConfig{BasePercent: randSignedPercent(rng, cfg.VideoBaseSpeed), Sine: videoSine}
 
-	//Trim
-	rec.TrimStart = cfg.TrimStartMin + rng.Float64()*(cfg.TrimStartMax-cfg.TrimStartMin)
-	rec.TrimEnd = cfg.TrimEndMin + rng.Float64()*(cfg.TrimEndMax-cfg.TrimEndMin)
+	totalFrames := int64(math.Max(1, probe.Duration*probe.Video.Fps))
+	rec.FreezeEvents = buildEvents(rng, totalFrames, cfg.FreezeCount.Min, cfg.FreezeCount.Max, cfg.MinEventDistanceSec, probe.Video.Fps, false)
+	rec.ReplaceEvents = buildEvents(rng, totalFrames, cfg.ReplaceCount.Min, cfg.ReplaceCount.Max, cfg.MinEventDistanceSec, probe.Video.Fps, true)
 
-	//Crop
-	CropWPercent := cfg.CropMinPercent + rng.Float64()*(cfg.CropMaxPercent-cfg.CropMinPercent)
-	CropHPercent := cfg.CropMinPercent + rng.Float64()*(cfg.CropMaxPercent-cfg.CropMinPercent)
-	finalW := int64(float64(probe.Video.Width) * CropWPercent)
-	finalH := int64(float64(probe.Video.Height) * CropHPercent)
-	maxX := max(probe.Video.Width-finalW, 0)
-	maxY := max(probe.Video.Height-finalH, 0)
-	cropX := int64(rng.Float64() * float64(maxX))
-	cropY := int64(rng.Float64() * float64(maxY))
-	rec.CropW = finalW
-	rec.CropH = finalH
-	rec.CropX = cropX
-	rec.CropY = cropY
-
-	//Color
-	colorPresetPath := ""
-	if cfg.ColorPreset != "random" {
-		colorPresetPath = filepath.Join(cfg.ColorConfigDir, cfg.ColorPreset+".json")
-		if _, err := os.Stat(colorPresetPath); err != nil {
-			return nil, errors.New("color preset does not exist")
-		}
-	} else {
-		entries, err := os.ReadDir(cfg.ColorConfigDir)
-		if err != nil {
-			return nil, err
-		}
-
-		var jsonFiles []string
-		for _, file := range entries {
-			if !file.IsDir() && strings.HasSuffix(strings.ToLower(file.Name()), ".json") {
-				jsonFiles = append(jsonFiles, file.Name())
-			}
-		}
-		if len(jsonFiles) == 0 {
-			return nil, errors.New("no color config files found")
-		}
-		randomIndex := rng.Intn(len(jsonFiles))
-		colorPresetPath = filepath.Join(cfg.ColorConfigDir, jsonFiles[randomIndex])
-	}
-	rec.ColorPresetPath = colorPresetPath
-
-	if cfg.ColorStrength == "soft" {
-		rec.ColorStrength = 0.9 + 0.1*rng.Float64()
-	} else if cfg.ColorStrength == "medium" {
-		rec.ColorStrength = 0.8 + 0.1*rng.Float64()
-	} else if cfg.ColorStrength == "hard" {
-		rec.ColorStrength = 0.7 + 0.1*rng.NormFloat64()
-	} else {
-		return nil, errors.New("invalid color strength")
-	}
-
-	//Captions
-	if cfg.Captions == "off" {
-		rec.CaptionsEnabled = false
-	} else if cfg.Captions == "auto" {
-		rec.CaptionModel = cfg.CaptionModel
-		rec.CaptionLanguage = cfg.CaptionLanguage
-
-		if cfg.CaptionTemplate != "random" {
-			rec.CaptionTemplatePath = filepath.Join(cfg.CaptionTemplateDir, cfg.CaptionTemplate+".json")
-			if _, err := os.Stat(rec.CaptionTemplatePath); err != nil {
-				return nil, errors.New("caption template does not exist")
-			}
-		} else {
-			entries, err := os.ReadDir(cfg.CaptionTemplateDir)
-			if err != nil {
-				return nil, errors.New("failed to read caption template directory")
-			}
-
-			var jsonFiles []string
-			for _, file := range entries {
-				if !file.IsDir() && strings.HasSuffix(strings.ToLower(file.Name()), ".json") {
-					jsonFiles = append(jsonFiles, file.Name())
-				}
-			}
-			if len(jsonFiles) == 0 {
-				return nil, errors.New("no caption template files found")
-			}
-			randomIndex := rng.Intn(len(jsonFiles))
-			rec.CaptionTemplatePath = filepath.Join(cfg.CaptionTemplateDir, jsonFiles[randomIndex])
-		}
-	} else {
-		return nil, fmt.Errorf("invalid captions mode: %s", cfg.Captions)
-	}
-
-	//Audio
-	if cfg.AudioEnvelope == "off" {
-		rec.AudioEnvelopeEnabled = false
-	} else if cfg.AudioEnvelope == "python" {
-		rec.AudioEnvelopeEnabled = true
-
-		if cfg.AudioEnvelopeConfig == "" {
-			return nil, errors.New("audio envelope config path is required")
-		}
-		if !strings.HasSuffix(strings.ToLower(cfg.AudioEnvelopeConfig), ".json") {
-			return nil, errors.New("audio envelope config must be a .json file")
-		}
-		if _, err := os.Stat(cfg.AudioEnvelopeConfig); err != nil {
-			return nil, errors.New("audio envelope does not exist")
-		}
-
-		rec.AudioEnvelope = cfg.AudioEnvelope
-	} else {
-		return nil, fmt.Errorf("invalid audio envelope mode: %s", cfg.AudioEnvelope)
-	}
-
-	//Music
-	if !cfg.MusicEnabled {
-		rec.MusicEnabled = false
-		rec.MusicPath = ""
-	} else {
-		rec.MusicEnabled = true
-		if _, err := os.Stat(cfg.MusicDir); err != nil {
-			return nil, errors.New("music dir does not exist")
-		}
-		var Music []string
-		music_patterns := []string{"*.mp3", "*.wav", "*.flac", "*.ogg", "*.m4a", "*.aac"}
-		for _, pattern := range music_patterns {
-			matches, err := filepath.Glob(filepath.Join(cfg.MusicDir, pattern))
-			if err != nil {
-				return nil, fmt.Errorf("error searching music files: %w", err)
-			}
-			Music = append(Music, matches...)
-		}
-		if len(Music) == 0 {
-			return nil, errors.New("no music files found")
-		}
-		randomIndex := rng.Intn(len(Music))
-		rec.MusicPath = Music[randomIndex]
-		rec.MusicVolume = cfg.MusicVolume
-	}
-
-	//Ducking
-	rec.DuckingEnabled = cfg.MusicDucking
-	if cfg.MusicDucking {
-		switch cfg.DuckingMod {
-		case "soft":
-			rec.DuckRatio = 0.6
-			rec.DuckAttackMS = 150
-			rec.DuckReleaseMS = 400
-		case "standard":
-			rec.DuckRatio = 0.35
-			rec.DuckAttackMS = 50
-			rec.DuckReleaseMS = 300
-		case "aggressive":
-			rec.DuckRatio = 0.15
-			rec.DuckAttackMS = 20
-			rec.DuckReleaseMS = 200
-		default:
-			rec.DuckRatio = 0.35
-			rec.DuckAttackMS = 50
-			rec.DuckReleaseMS = 300
-		}
-	}
-
-	//StreamOverlay
-	if _, err := os.Stat(cfg.StreamOverlayDir); err != nil {
-		return nil, errors.New("stream overlay dir does not exist")
-	}
-	var Video []string
-	video_patterns := []string{"*.mp4", "*.mkv", "*.avi", "*.mov", "*.webm", "*.mp3", "*.wav", "*.flac", "*.ogg"}
-	for _, pattern := range video_patterns {
-		matches, err := filepath.Glob(filepath.Join(cfg.StreamOverlayDir, pattern))
-		if err != nil {
-			return nil, fmt.Errorf("error searching music files: %w", err)
-		}
-		Video = append(Video, matches...)
-	}
-	if len(Video) == 0 {
-		return nil, errors.New("no video files found")
-	}
-	randomIndex := rng.Intn(len(Video))
-	rec.StreamOverlayPath = Video[randomIndex]
-	rec.OverlayOpacity = cfg.StreamOverlayOpacity
-
-	//Temporal/FPS/Codec
-	rec.TemporalShift = cfg.TemporalShift
-	rec.FpsTweak = cfg.FPSTweak
-	rec.VideoCodec = "libx264"
-	rec.AudioCodec = "aac"
-	rec.Profile = cfg.CodecProfile
-
-	return &rec, nil
+	rec.PixelReplacement = PixelReplacement{Percent: randPercent(rng, cfg.PixelReplacePercent.Min, cfg.PixelReplacePercent.Max), Mode: cfg.PixelReplaceMode, AreaInsetPercent: randPercent(rng, cfg.PixelAreaEdgeInset.Min, cfg.PixelAreaEdgeInset.Max), SmartGrid: cfg.PixelAreaSmartGrid, NeighborOffset: randInt(rng, cfg.NeighborOffsetMin, cfg.NeighborOffsetMax)}
+	return rec, nil
 }
+
+func randSignedPercent(rng *rand.Rand, r config.SpeedRange) float64 { p := randPercent(rng, r.MinPercent, r.MaxPercent); if rng.Intn(2)==0 { return -p }; return p }
+func randSine(rng *rand.Rand, r config.SineParamsRange) SineParams { return SineParams{Amplitude: randPercent(rng, r.AmplitudeMin, r.AmplitudeMax), Frequency: randPercent(rng, r.FrequencyMin, r.FrequencyMax), Phase: randPercent(rng, r.PhaseMin, r.PhaseMax)} }
+func randPercent(rng *rand.Rand, min,max float64) float64 { return min + rng.Float64()*(max-min) }
+func randInt(rng *rand.Rand, min,max int) int { if max<=min { return min }; return min+rng.Intn(max-min+1)}
+
+func buildEvents(rng *rand.Rand, totalFrames int64, minCount,maxCount int, minDistanceSec,fps float64, donor bool) []Event {
+	count := minCount
+	if maxCount>minCount { count += rng.Intn(maxCount-minCount+1) }
+	if count <= 0 { return nil }
+	minDist := int64(minDistanceSec * fps)
+	used := map[int64]bool{}
+	out := make([]Event,0,count)
+	for len(out) < count {
+		candidate := int64(rng.Int63n(totalFrames))
+		ok := true
+		for _, ev := range out { if abs64(ev.Frame-candidate) < minDist { ok=false; break } }
+		if !ok || used[candidate] { continue }
+		used[candidate] = true
+		ev := Event{Frame:candidate}
+		if donor { for { d:=int64(rng.Int63n(totalFrames)); if !used[d] && d!=candidate { used[d]=true; ev.DonorFrame=d; break } } }
+		out = append(out, ev)
+	}
+	return out
+}
+func abs64(v int64) int64 { if v<0 { return -v }; return v }
