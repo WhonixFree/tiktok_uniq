@@ -17,6 +17,7 @@ func baseCfg() config.Config {
 		ReplaceCount: config.EventCountRange{Min: 2, Max: 2},
 		MinEventDistanceSec: 1.0,
 		PixelReplacePercent: config.PercentRange{Min: 0.1, Max: 0.2},
+		PixelBlurSigma: config.PercentRange{Min: 0.08, Max: 0.22},
 		PixelReplaceMode: "edge",
 		PixelAreaEdgeInset: config.PercentRange{Min: 0.01, Max: 0.02},
 		PixelAreaSmartGrid: 8,
@@ -71,5 +72,31 @@ func TestGenerateSineLockMode(t *testing.T) {
 	}
 	if rec.AudioSpeed.Sine != rec.VideoSpeed.Sine {
 		t.Fatal("expected locked sine params for audio/video")
+	}
+}
+
+func TestGeneratePixelMandatoryBlockEdgeMode(t *testing.T) {
+	cfg := baseCfg()
+	probe := &ffprobe.ProbeData{Duration: 5, Video: &ffprobe.VideoStream{Fps: 30}}
+	rec, err := Generate(cfg, probe)
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	if rec.PixelReplacement.BlurSigma < cfg.PixelBlurSigma.Min || rec.PixelReplacement.BlurSigma > cfg.PixelBlurSigma.Max {
+		t.Fatalf("blur sigma out of range: %f", rec.PixelReplacement.BlurSigma)
+	}
+	if rec.PixelReplacement.Percent < cfg.PixelReplacePercent.Min || rec.PixelReplacement.Percent > cfg.PixelReplacePercent.Max {
+		t.Fatalf("replace percent out of range: %f", rec.PixelReplacement.Percent)
+	}
+	if rec.PixelReplacement.Mode != "edge" {
+		t.Fatalf("expected edge mode, got %q", rec.PixelReplacement.Mode)
+	}
+	if rec.PixelReplacement.AreaInsetPercent < cfg.PixelAreaEdgeInset.Min || rec.PixelReplacement.AreaInsetPercent > cfg.PixelAreaEdgeInset.Max {
+		t.Fatalf("edge inset out of range: %f", rec.PixelReplacement.AreaInsetPercent)
+	}
+	switch rec.PixelReplacement.AreaEdge {
+	case "top", "right", "bottom", "left":
+	default:
+		t.Fatalf("unexpected edge selected: %q", rec.PixelReplacement.AreaEdge)
 	}
 }
