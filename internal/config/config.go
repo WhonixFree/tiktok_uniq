@@ -88,6 +88,7 @@ type Config struct {
 	ReplaceDonorDistance int
 
 	PixelReplacePercent PercentRange
+	PixelBlurSigma      PercentRange
 	PixelReplaceMode    string
 	PixelAreaEdgeInset  PercentRange
 	PixelAreaSmartGrid  int

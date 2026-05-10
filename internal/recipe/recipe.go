@@ -15,9 +15,11 @@ type SpeedConfig struct { BasePercent float64; Sine SineParams }
 type Event struct { Frame int64; DonorFrame int64 }
 
 type PixelReplacement struct {
+	BlurSigma float64
 	Percent float64
 	Mode string
 	AreaInsetPercent float64
+	AreaEdge string
 	SmartGrid int
 	NeighborOffset int
 }
@@ -52,8 +54,21 @@ func Generate(cfg config.Config, probe *ffprobe.ProbeData) (*Recipe, error) {
 	rec.FreezeEvents = buildEvents(rng, totalFrames, cfg.FreezeCount.Min, cfg.FreezeCount.Max, minDistFrames, nil)
 	rec.ReplaceEvents = buildReplaceEvents(rng, totalFrames, cfg.ReplaceCount.Min, cfg.ReplaceCount.Max, minDistFrames, rec.FreezeEvents)
 
-	rec.PixelReplacement = PixelReplacement{Percent: randPercent(rng, cfg.PixelReplacePercent.Min, cfg.PixelReplacePercent.Max), Mode: cfg.PixelReplaceMode, AreaInsetPercent: randPercent(rng, cfg.PixelAreaEdgeInset.Min, cfg.PixelAreaEdgeInset.Max), SmartGrid: cfg.PixelAreaSmartGrid, NeighborOffset: randInt(rng, cfg.NeighborOffsetMin, cfg.NeighborOffsetMax)}
+	rec.PixelReplacement = PixelReplacement{
+		BlurSigma: randPercent(rng, cfg.PixelBlurSigma.Min, cfg.PixelBlurSigma.Max),
+		Percent: randPercent(rng, cfg.PixelReplacePercent.Min, cfg.PixelReplacePercent.Max),
+		Mode: cfg.PixelReplaceMode,
+		AreaInsetPercent: randPercent(rng, cfg.PixelAreaEdgeInset.Min, cfg.PixelAreaEdgeInset.Max),
+		AreaEdge: randEdge(rng),
+		SmartGrid: cfg.PixelAreaSmartGrid,
+		NeighborOffset: randInt(rng, cfg.NeighborOffsetMin, cfg.NeighborOffsetMax),
+	}
 	return rec, nil
+}
+
+func randEdge(rng *rand.Rand) string {
+	edges := []string{"top", "right", "bottom", "left"}
+	return edges[rng.Intn(len(edges))]
 }
 
 func randSignedPercent(rng *rand.Rand, r config.SpeedRange) float64 { p := randPercent(rng, r.MinPercent, r.MaxPercent); if rng.Intn(2)==0 { return -p }; return p }

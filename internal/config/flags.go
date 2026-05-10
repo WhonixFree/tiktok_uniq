@@ -78,6 +78,8 @@ func ParseFlags(args []string, output io.Writer) (Config, error) {
 	fs.Float64Var(&cfg.MinEventDistanceSec, "min-event-distance-sec", 0.4, "minimum distance between events in seconds")
 	fs.Float64Var(&cfg.PixelReplacePercent.Min, "pixel-replace-percent-min", 0.05, "pixel replace percent min")
 	fs.Float64Var(&cfg.PixelReplacePercent.Max, "pixel-replace-percent-max", 0.4, "pixel replace percent max")
+	fs.Float64Var(&cfg.PixelBlurSigma.Min, "pixel-blur-sigma-min", 0.08, "weak gaussian blur sigma min")
+	fs.Float64Var(&cfg.PixelBlurSigma.Max, "pixel-blur-sigma-max", 0.22, "weak gaussian blur sigma max")
 	fs.StringVar(&cfg.PixelReplaceMode, "pixel-replace-mode", "edge", "pixel replacement mode: edge|smart")
 	fs.Float64Var(&cfg.PixelAreaEdgeInset.Min, "pixel-edge-inset-min", 0.01, "edge mode inset min percent")
 	fs.Float64Var(&cfg.PixelAreaEdgeInset.Max, "pixel-edge-inset-max", 0.08, "edge mode inset max percent")
@@ -110,6 +112,7 @@ func (cfg Config) Validate() error { var errs []error
  if cfg.ReplaceCount.Min<0||cfg.ReplaceCount.Max<cfg.ReplaceCount.Min { errs=append(errs,errors.New("invalid replace count range")) }
  if cfg.MinEventDistanceSec<0 { errs=append(errs,errors.New("--min-event-distance-sec must be >= 0")) }
  if err:=validatePercentRange(cfg.PixelReplacePercent.Min,cfg.PixelReplacePercent.Max,"pixel replace percent"); err!=nil {errs=append(errs,err)}
+ if err:=validateMinMax(cfg.PixelBlurSigma.Min,cfg.PixelBlurSigma.Max,"pixel blur sigma"); err!=nil {errs=append(errs,err)}
  if !oneOf(cfg.PixelReplaceMode,"edge","smart"){errs=append(errs,errors.New("--pixel-replace-mode must be edge|smart"))}
  if err:=validatePercentRange(cfg.PixelAreaEdgeInset.Min,cfg.PixelAreaEdgeInset.Max,"pixel edge inset"); err!=nil {errs=append(errs,err)}
  if cfg.NeighborOffsetMin<0 || cfg.NeighborOffsetMax<cfg.NeighborOffsetMin { errs=append(errs,errors.New("invalid neighbor offset range")) }
