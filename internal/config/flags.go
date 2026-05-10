@@ -39,121 +39,84 @@ func ParseFlags(args []string, output io.Writer) (Config, error) {
 	fs.StringVar(&cfg.ColorPreset, "color-preset", "off", "color preset name or random")
 	fs.StringVar(&cfg.ColorStrength, "color-strength", "soft", "color strength: soft|medium|hard")
 	fs.StringVar(&cfg.ColorConfigDir, "color-config-dir", "./configs/color_presets", "color presets directory")
-
 	fs.StringVar(&cfg.Captions, "captions", "off", "captions mode: off|auto")
 	fs.StringVar(&cfg.CaptionTemplate, "caption-template", "default", "caption template name or random")
 	fs.StringVar(&cfg.CaptionTemplateDir, "caption-template-dir", "./configs/caption_templates", "caption templates directory")
 	fs.StringVar(&cfg.CaptionLanguage, "caption-language", "auto", "caption language")
 	fs.StringVar(&cfg.CaptionModel, "caption-model", "base", "caption model")
-
 	fs.StringVar(&cfg.AudioEnvelope, "audio-envelope", "off", "audio envelope mode: off|python")
 	fs.StringVar(&cfg.AudioEnvelopeConfig, "audio-envelope-config", "", "audio envelope config path")
-
 	fs.BoolVar(&cfg.MusicEnabled, "music", false, "enable background music")
 	fs.StringVar(&cfg.MusicDir, "music-dir", "./assets/music", "music directory")
 	fs.Float64Var(&cfg.MusicVolume, "music-volume", 0.06, "background music volume")
 	fs.BoolVar(&cfg.MusicDucking, "music-ducking", false, "enable music ducking")
 	fs.StringVar(&cfg.DuckingMod, "ducking-mod", "standard", "ducking mode: soft|standard|aggressive")
-
 	fs.StringVar(&cfg.StreamOverlayDir, "stream-overlay-dir", "./assets/stream_overlays", "stream overlay directory")
 	fs.Float64Var(&cfg.StreamOverlayOpacity, "stream-overlay-opacity", 0.02, "stream overlay opacity (recommended: 0.01-0.03)")
-
 	fs.StringVar(&cfg.MetadataPolicy, "metadata-policy", "./configs/metadata_policy.json", "metadata policy path")
-
 	fs.Float64Var(&cfg.TemporalShift, "temporal-shift", 0, "temporal shift multiplier delta")
 	fs.Float64Var(&cfg.FPSTweak, "fps-tweak", 0, "fps override/tweak")
 	fs.StringVar(&cfg.CodecProfile, "codec-profile", "balanced", "codec profile: fast|balanced|strong")
 
-	if err := fs.Parse(args); err != nil {
-		return Config{}, err
-	}
-	if fs.NArg() > 0 {
-		return Config{}, fmt.Errorf("unexpected positional arguments: %v", fs.Args())
-	}
-	if err := cfg.Validate(); err != nil {
-		return Config{}, err
-	}
+	fs.Float64Var(&cfg.AudioBaseSpeed.MinPercent, "audio-base-speed-min-percent", 0.2, "audio base speed min percent delta")
+	fs.Float64Var(&cfg.AudioBaseSpeed.MaxPercent, "audio-base-speed-max-percent", 1.2, "audio base speed max percent delta")
+	fs.Float64Var(&cfg.VideoBaseSpeed.MinPercent, "video-base-speed-min-percent", 0.2, "video base speed min percent delta")
+	fs.Float64Var(&cfg.VideoBaseSpeed.MaxPercent, "video-base-speed-max-percent", 1.2, "video base speed max percent delta")
+	fs.StringVar(&cfg.AVSineMode, "av-sine-mode", "lock", "sine mode: lock|independent")
+	fs.Float64Var(&cfg.AudioSine.AmplitudeMin, "audio-sine-amp-min", 0.001, "audio sine amplitude min")
+	fs.Float64Var(&cfg.AudioSine.AmplitudeMax, "audio-sine-amp-max", 0.01, "audio sine amplitude max")
+	fs.Float64Var(&cfg.VideoSine.AmplitudeMin, "video-sine-amp-min", 0.001, "video sine amplitude min")
+	fs.Float64Var(&cfg.VideoSine.AmplitudeMax, "video-sine-amp-max", 0.01, "video sine amplitude max")
+	fs.Float64Var(&cfg.AudioSine.FrequencyMin, "audio-sine-freq-min", 0.05, "audio sine frequency min")
+	fs.Float64Var(&cfg.AudioSine.FrequencyMax, "audio-sine-freq-max", 0.3, "audio sine frequency max")
+	fs.Float64Var(&cfg.VideoSine.FrequencyMin, "video-sine-freq-min", 0.05, "video sine frequency min")
+	fs.Float64Var(&cfg.VideoSine.FrequencyMax, "video-sine-freq-max", 0.3, "video sine frequency max")
+	fs.IntVar(&cfg.FreezeCount.Min, "freeze-count-min", 1, "minimum freeze event count")
+	fs.IntVar(&cfg.FreezeCount.Max, "freeze-count-max", 6, "maximum freeze event count")
+	fs.IntVar(&cfg.ReplaceCount.Min, "replace-count-min", 1, "minimum replace event count")
+	fs.IntVar(&cfg.ReplaceCount.Max, "replace-count-max", 6, "maximum replace event count")
+	fs.Float64Var(&cfg.MinEventDistanceSec, "min-event-distance-sec", 0.4, "minimum distance between events in seconds")
+	fs.Float64Var(&cfg.PixelReplacePercent.Min, "pixel-replace-percent-min", 0.05, "pixel replace percent min")
+	fs.Float64Var(&cfg.PixelReplacePercent.Max, "pixel-replace-percent-max", 0.4, "pixel replace percent max")
+	fs.StringVar(&cfg.PixelReplaceMode, "pixel-replace-mode", "edge", "pixel replacement mode: edge|smart")
+	fs.Float64Var(&cfg.PixelAreaEdgeInset.Min, "pixel-edge-inset-min", 0.01, "edge mode inset min percent")
+	fs.Float64Var(&cfg.PixelAreaEdgeInset.Max, "pixel-edge-inset-max", 0.08, "edge mode inset max percent")
+	fs.IntVar(&cfg.PixelAreaSmartGrid, "pixel-smart-grid", 8, "smart mode analysis grid")
+	fs.IntVar(&cfg.NeighborOffsetMin, "neighbor-offset-min", 1, "neighbor offset min")
+	fs.IntVar(&cfg.NeighborOffsetMax, "neighbor-offset-max", 2, "neighbor offset max")
+	fs.StringVar(&cfg.MetadataFullMode, "metadata-full-mode", "clean_diversify", "metadata full mode")
+
+	if err := fs.Parse(args); err != nil { return Config{}, err }
+	if fs.NArg() > 0 { return Config{}, fmt.Errorf("unexpected positional arguments: %v", fs.Args()) }
+	if err := cfg.Validate(); err != nil { return Config{}, err }
 	return cfg, nil
 }
 
-func (cfg Config) Validate() error {
-	var errs []error
-
-	if cfg.InputDir == "" {
-		errs = append(errs, errors.New("--input must not be empty"))
-	}
-	if cfg.OutputDir == "" {
-		errs = append(errs, errors.New("--output must not be empty"))
-	}
-	if cfg.TmpDir == "" {
-		errs = append(errs, errors.New("--tmp must not be empty"))
-	}
-	if cfg.LogsDir == "" {
-		errs = append(errs, errors.New("--logs must not be empty"))
-	}
-	if cfg.Jobs < 1 {
-		errs = append(errs, errors.New("--jobs must be >= 1"))
-	}
-	if cfg.ThreadsPerJob < 1 {
-		errs = append(errs, errors.New("--threads-per-job must be >= 1"))
-	}
-	if cfg.TrimStartMin < 0 || cfg.TrimStartMax < 0 || cfg.TrimEndMin < 0 || cfg.TrimEndMax < 0 {
-		errs = append(errs, errors.New("trim values must be >= 0"))
-	}
-	if cfg.TrimStartMax < cfg.TrimStartMin {
-		errs = append(errs, errors.New("--trim-start-max must be >= --trim-start-min"))
-	}
-	if cfg.TrimEndMax < cfg.TrimEndMin {
-		errs = append(errs, errors.New("--trim-end-max must be >= --trim-end-min"))
-	}
-	if cfg.CropMinPercent <= 0 {
-		errs = append(errs, errors.New("--crop-min-percent must be > 0"))
-	}
-	if cfg.CropMaxPercent <= 0 {
-		errs = append(errs, errors.New("--crop-max-percent must be > 0"))
-	}
-	if cfg.CropMinPercent >= 100 {
-		errs = append(errs, errors.New("--crop-min-percent must be < 100"))
-	}
-	if cfg.CropMaxPercent >= 100 {
-		errs = append(errs, errors.New("--crop-max-percent must be < 100"))
-	}
-	if cfg.CropMaxPercent < cfg.CropMinPercent {
-		errs = append(errs, errors.New("--crop-max-percent must be >= --crop-min-percent"))
-	}
-	if !oneOf(cfg.CropPosition, "random", "center", "top", "bottom") {
-		errs = append(errs, errors.New("--crop-position must be one of random|center|top|bottom"))
-	}
-	if !oneOf(cfg.ColorStrength, "soft", "medium", "hard") {
-		errs = append(errs, errors.New("--color-strength must be one of soft|medium|hard"))
-	}
-	if !oneOf(cfg.Captions, "off", "auto") {
-		errs = append(errs, errors.New("--captions must be one of off|auto"))
-	}
-	if !oneOf(cfg.AudioEnvelope, "off", "python") {
-		errs = append(errs, errors.New("--audio-envelope must be one of off|python"))
-	}
-	if cfg.MusicVolume < 0 {
-		errs = append(errs, errors.New("--music-volume must be >= 0"))
-	}
-	if !oneOf(cfg.DuckingMod, "soft", "standard", "aggressive") {
-		errs = append(errs, errors.New("--ducking-mod must be one of soft|standard|aggressive"))
-	}
-	if cfg.StreamOverlayOpacity < 0 || cfg.StreamOverlayOpacity > 1 {
-		errs = append(errs, errors.New("--stream-overlay-opacity must be between 0 and 1"))
-	}
-	if !oneOf(cfg.CodecProfile, "fast", "balanced", "strong") {
-		errs = append(errs, errors.New("--codec-profile must be one of fast|balanced|strong"))
-	}
-
-	return errors.Join(errs...)
+func (cfg Config) Validate() error { var errs []error
+ if cfg.InputDir==""{errs=append(errs,errors.New("--input must not be empty"))}
+ if cfg.OutputDir==""{errs=append(errs,errors.New("--output must not be empty"))}
+ if cfg.Jobs<1{errs=append(errs,errors.New("--jobs must be >= 1"))}
+ if cfg.ThreadsPerJob<1{errs=append(errs,errors.New("--threads-per-job must be >= 1"))}
+ if cfg.TrimStartMax<cfg.TrimStartMin||cfg.TrimEndMax<cfg.TrimEndMin{errs=append(errs,errors.New("trim max must be >= min"))}
+ if cfg.CropEnabled { if cfg.CropMinPercent<=0||cfg.CropMaxPercent<=0||cfg.CropMinPercent>=100||cfg.CropMaxPercent>=100||cfg.CropMaxPercent<cfg.CropMinPercent { errs=append(errs,errors.New("invalid crop percent range")) } }
+ if !oneOf(cfg.AVSineMode,"lock","independent"){errs=append(errs,errors.New("--av-sine-mode must be one of lock|independent"))}
+ if err:=validatePercentRange(cfg.AudioBaseSpeed.MinPercent,cfg.AudioBaseSpeed.MaxPercent,"audio base speed"); err!=nil {errs=append(errs,err)}
+ if err:=validatePercentRange(cfg.VideoBaseSpeed.MinPercent,cfg.VideoBaseSpeed.MaxPercent,"video base speed"); err!=nil {errs=append(errs,err)}
+ if err:=validateMinMax(cfg.AudioSine.AmplitudeMin,cfg.AudioSine.AmplitudeMax,"audio sine amplitude"); err!=nil {errs=append(errs,err)}
+ if err:=validateMinMax(cfg.VideoSine.AmplitudeMin,cfg.VideoSine.AmplitudeMax,"video sine amplitude"); err!=nil {errs=append(errs,err)}
+ if err:=validateMinMax(cfg.AudioSine.FrequencyMin,cfg.AudioSine.FrequencyMax,"audio sine frequency"); err!=nil {errs=append(errs,err)}
+ if err:=validateMinMax(cfg.VideoSine.FrequencyMin,cfg.VideoSine.FrequencyMax,"video sine frequency"); err!=nil {errs=append(errs,err)}
+ if cfg.FreezeCount.Min<0||cfg.FreezeCount.Max<cfg.FreezeCount.Min { errs=append(errs,errors.New("invalid freeze count range")) }
+ if cfg.ReplaceCount.Min<0||cfg.ReplaceCount.Max<cfg.ReplaceCount.Min { errs=append(errs,errors.New("invalid replace count range")) }
+ if cfg.MinEventDistanceSec<0 { errs=append(errs,errors.New("--min-event-distance-sec must be >= 0")) }
+ if err:=validatePercentRange(cfg.PixelReplacePercent.Min,cfg.PixelReplacePercent.Max,"pixel replace percent"); err!=nil {errs=append(errs,err)}
+ if !oneOf(cfg.PixelReplaceMode,"edge","smart"){errs=append(errs,errors.New("--pixel-replace-mode must be edge|smart"))}
+ if err:=validatePercentRange(cfg.PixelAreaEdgeInset.Min,cfg.PixelAreaEdgeInset.Max,"pixel edge inset"); err!=nil {errs=append(errs,err)}
+ if cfg.NeighborOffsetMin<0 || cfg.NeighborOffsetMax<cfg.NeighborOffsetMin { errs=append(errs,errors.New("invalid neighbor offset range")) }
+ if cfg.MetadataFullMode!="clean_diversify" { errs=append(errs,errors.New("--metadata-full-mode must be clean_diversify")) }
+ return errors.Join(errs...)
 }
 
-func oneOf(value string, allowed ...string) bool {
-	for _, candidate := range allowed {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
-}
+func validateMinMax(min, max float64, name string) error { if min<0 || max<min { return fmt.Errorf("invalid %s range", name)}; return nil }
+func validatePercentRange(min, max float64, name string) error { if min<0 || max<min || max>100 { return fmt.Errorf("invalid %s percent range", name)}; return nil }
+func oneOf(value string, allowed ...string) bool { for _, c := range allowed { if value==c { return true } }; return false }
