@@ -190,3 +190,60 @@ func TestRenderIntegrationValidatesOutputIntegrityAndAVSync(t *testing.T) {
 		t.Fatalf("ValidateOutput failed: %v", err)
 	}
 }
+
+func TestVideoReplaceFilterUsesPiecewiseOneFrameConcat(t *testing.T) {
+	events := []recipe.Event{{Frame: 2, DonorFrame: 7, DonorPath: "donor.mp4", DonorImagePath: "replace_donor_000.png"}}
+	graph := videoReplaceFilter("[speeded]", "[temporal]", events, 1, 25, 1, 64, 64)
+	want := []string{
+		"[speeded]trim=start=0.000000000:end=0.080000000,setpts=PTS-STARTPTS[rseg0]",
+		"[1:v]scale=64:64,setsar=1,format=rgba,fps=fps=25.00000000,trim=duration=0.040000000,setpts=PTS-STARTPTS[rdonor0]",
+		"[speeded]trim=start=0.120000000:end=1.000000000,setpts=PTS-STARTPTS[rseg1]",
+		"[rseg0][rdonor0][rseg1]concat=n=3:v=1:a=0,fps=fps=25.00000000[temporal]",
+	}
+	for _, part := range want {
+		if !strings.Contains(graph, part) {
+			t.Fatalf("replace graph missing %q:\n%s", part, graph)
+		}
+	}
+	if strings.Contains(graph, "enable=") || strings.Contains(graph, "overlay=") {
+		t.Fatalf("replace must be piecewise concat, not overlay enable: %s", graph)
+	}
+}
+
+func TestPrepareReplaceDonorsExtractsOnePNGPerEvent(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "ffmpeg.args")
+	ffmpeg := filepath.Join(dir, "ffmpeg")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + logPath + "\nfor arg do out=\"$arg\"; done\nprintf 'png:%s' \"$*\" > \"$out\"\n"
+	if err := os.WriteFile(ffmpeg, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake ffmpeg: %v", err)
+	}
+	img0 := filepath.Join(dir, "replace_donor_000.png")
+	img1 := filepath.Join(dir, "replace_donor_001.png")
+	rec := &recipe.Recipe{ReplaceEvents: []recipe.Event{
+		{Frame: 1, DonorFrame: 3, DonorPath: "donor-a.mp4", DonorImagePath: img0},
+		{Frame: 4, DonorFrame: 8, DonorPath: "donor-a.mp4", DonorImagePath: img1},
+	}}
+	runner := Runner{FFmpegPath: ffmpeg}
+	got, err := runner.prepareReplaceDonors(context.Background(), workerpool.Job{OutputPath: filepath.Join(dir, "out.mp4")}, rec)
+	if err != nil {
+		t.Fatalf("prepareReplaceDonors failed: %v", err)
+	}
+	if len(got) != 2 || got[0] != img0 || got[1] != img1 {
+		t.Fatalf("unexpected donor images: %#v", got)
+	}
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake ffmpeg log: %v", err)
+	}
+	log := string(logData)
+	for _, marker := range []string{"select=eq(n\\,3) -vsync 0 -frames:v 1", "select=eq(n\\,8) -vsync 0 -frames:v 1"} {
+		if !strings.Contains(log, marker) {
+			t.Fatalf("missing extraction marker %q in:\n%s", marker, log)
+		}
+	}
+	firstPNG, _ := os.ReadFile(img0)
+	if len(firstPNG) == 0 {
+		t.Fatal("expected fake donor PNG to be written")
+	}
+}

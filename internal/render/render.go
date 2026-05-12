@@ -64,7 +64,11 @@ func (r Runner) Render(ctx context.Context, cfg config.Config, job workerpool.Jo
 		return err
 	}
 
-	pipeline, err := BuildPipeline(cfg, probe, rec)
+	donorInputs, err := r.prepareReplaceDonors(ctx, job, rec)
+	if err != nil {
+		return err
+	}
+	pipeline, err := BuildPipelineWithDonors(cfg, probe, rec, 1)
 	if err != nil {
 		return err
 	}
@@ -76,6 +80,10 @@ func (r Runner) Render(ctx context.Context, cfg config.Config, job workerpool.Jo
 		args = append(args, "-n")
 	}
 	args = append(args, "-i", job.InputPath)
+	frameDuration := 1 / probe.Video.Fps
+	for _, donorInput := range donorInputs {
+		args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.9f", frameDuration), "-i", donorInput)
+	}
 	if probe.Audio != nil {
 		processedAudio, err := r.processAudioSpeed(ctx, job, probe, rec, pipeline.PlannedVideoDuration)
 		if err != nil {
@@ -85,7 +93,8 @@ func (r Runner) Render(ctx context.Context, cfg config.Config, job workerpool.Jo
 	}
 	args = append(args, "-filter_complex", pipeline.FilterGraph, "-map", pipeline.VideoLabel)
 	if probe.Audio != nil {
-		args = append(args, "-map", "1:a:0")
+		audioInputIndex := 1 + len(donorInputs)
+		args = append(args, "-map", fmt.Sprintf("%d:a:0", audioInputIndex))
 		args = append(args, "-c:a", "aac", "-b:a", "128k")
 	}
 	args = append(args, codecArgs(cfg.CodecProfile)...)
@@ -96,6 +105,32 @@ func (r Runner) Render(ctx context.Context, cfg config.Config, job workerpool.Jo
 		return fmt.Errorf("ffmpeg render failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return r.ValidateOutput(ctx, job.OutputPath)
+}
+
+func (r Runner) prepareReplaceDonors(ctx context.Context, job workerpool.Job, rec *recipe.Recipe) ([]string, error) {
+	if rec == nil || len(rec.ReplaceEvents) == 0 {
+		return nil, nil
+	}
+	ffmpegPath, err := executable(r.FFmpegPath, "ffmpeg")
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rec.ReplaceEvents))
+	for i, ev := range rec.ReplaceEvents {
+		if ev.DonorPath == "" || ev.DonorImagePath == "" {
+			return nil, fmt.Errorf("replace event %d missing donor stream or image path", i)
+		}
+		if err := os.MkdirAll(filepath.Dir(ev.DonorImagePath), 0o755); err != nil {
+			return nil, err
+		}
+		args := []string{"-hide_banner", "-loglevel", "error", "-y", "-i", ev.DonorPath, "-vf", fmt.Sprintf("select=eq(n\\,%d)", ev.DonorFrame), "-vsync", "0", "-frames:v", "1", ev.DonorImagePath}
+		cmd := exec.CommandContext(ctx, ffmpegPath, args...)
+		if bytes, err := cmd.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("replace donor frame extraction failed for event %d: %w: %s", i, err, strings.TrimSpace(string(bytes)))
+		}
+		out = append(out, ev.DonorImagePath)
+	}
+	return out, nil
 }
 
 func (r Runner) processAudioSpeed(ctx context.Context, job workerpool.Job, probe *ffprobe.ProbeData, rec *recipe.Recipe, targetDuration float64) (string, error) {
@@ -204,6 +239,10 @@ func (r Runner) ValidateOutput(ctx context.Context, outputPath string) error {
 }
 
 func BuildPipeline(cfg config.Config, probe *ffprobe.ProbeData, rec *recipe.Recipe) (Pipeline, error) {
+	return BuildPipelineWithDonors(cfg, probe, rec, -1)
+}
+
+func BuildPipelineWithDonors(cfg config.Config, probe *ffprobe.ProbeData, rec *recipe.Recipe, firstDonorInputIndex int) (Pipeline, error) {
 	if probe == nil || probe.Video == nil {
 		return Pipeline{}, errors.New("video probe data is required")
 	}
@@ -234,12 +273,13 @@ func BuildPipeline(cfg config.Config, probe *ffprobe.ProbeData, rec *recipe.Reci
 	blur := fmt.Sprintf("[gcolor]gblur=sigma=%.4f[blurred]", blurSigma)
 	pixel := fmt.Sprintf("[blurred]split=2[pixelbase][pixelsrc];[pixelsrc]crop=%d:%d:%d:%d,format=rgba,colorchannelmixer=aa=%.6f[pixelpatch];[pixelbase][pixelpatch]overlay=%d:%d[pixel]", area.w, area.h, neighborX, neighborY, replaceAlpha, area.x, area.y)
 	segments := BuildVideoSpeedPlan(probe.Duration, rec.VideoSpeed)
-	temporal, plannedDuration := videoTemporalFilter("[pixel]", "[temporal]", segments)
+	speedTemporal, plannedDuration := videoTemporalFilter("[pixel]", "[speeded]", segments)
+	replaceTemporal := videoReplaceFilter("[speeded]", "[temporal]", rec.ReplaceEvents, firstDonorInputIndex, probe.Video.Fps, plannedDuration, width, height)
 	overlay := fmt.Sprintf("color=c=white@%.6f:s=%dx%d:r=30,format=rgba[streamoverlay];[temporal][streamoverlay]overlay=0:0:shortest=1[vout]", overlayOpacity, width, height)
 
 	return Pipeline{
 		Stages:               append([]Stage(nil), RecommendedOrder...),
-		FilterGraph:          strings.Join([]string{geometryColor, blur, pixel, temporal, overlay}, ";"),
+		FilterGraph:          strings.Join([]string{geometryColor, blur, pixel, speedTemporal, replaceTemporal, overlay}, ";"),
 		VideoLabel:           "[vout]",
 		PlannedVideoDuration: plannedDuration,
 	}, nil
@@ -327,6 +367,47 @@ func videoTemporalFilter(inputLabel, outputLabel string, segments []SpeedSegment
 	}
 	parts = append(parts, fmt.Sprintf("%sconcat=n=%d:v=1:a=0%s", strings.Join(labels, ""), len(segments), outputLabel))
 	return strings.Join(parts, ";"), planned
+}
+
+func videoReplaceFilter(inputLabel, outputLabel string, events []recipe.Event, firstDonorInputIndex int, fps, duration float64, width, height int) string {
+	if fps <= 0 {
+		fps = 30
+	}
+	if len(events) == 0 || firstDonorInputIndex < 0 {
+		return fmt.Sprintf("%sfps=fps=%.8f%s", inputLabel, fps, outputLabel)
+	}
+	frameDuration := 1 / fps
+	parts := make([]string, 0, len(events)*2+2)
+	labels := make([]string, 0, len(events)*2+1)
+	prev := 0.0
+	segIndex := 0
+	for i, ev := range events {
+		start := float64(ev.Frame) * frameDuration
+		end := start + frameDuration
+		if start < prev || start >= duration {
+			continue
+		}
+		if start > prev {
+			label := fmt.Sprintf("[rseg%d]", segIndex)
+			parts = append(parts, fmt.Sprintf("%strim=start=%.9f:end=%.9f,setpts=PTS-STARTPTS%s", inputLabel, prev, start, label))
+			labels = append(labels, label)
+			segIndex++
+		}
+		donorLabel := fmt.Sprintf("[rdonor%d]", i)
+		parts = append(parts, fmt.Sprintf("[%d:v]scale=%d:%d,setsar=1,format=rgba,fps=fps=%.8f,trim=duration=%.9f,setpts=PTS-STARTPTS%s", firstDonorInputIndex+i, width, height, fps, frameDuration, donorLabel))
+		labels = append(labels, donorLabel)
+		prev = end
+	}
+	if prev < duration {
+		label := fmt.Sprintf("[rseg%d]", segIndex)
+		parts = append(parts, fmt.Sprintf("%strim=start=%.9f:end=%.9f,setpts=PTS-STARTPTS%s", inputLabel, prev, duration, label))
+		labels = append(labels, label)
+	}
+	if len(labels) == 0 {
+		return fmt.Sprintf("%sfps=fps=%.8f%s", inputLabel, fps, outputLabel)
+	}
+	parts = append(parts, fmt.Sprintf("%sconcat=n=%d:v=1:a=0,fps=fps=%.8f%s", strings.Join(labels, ""), len(labels), fps, outputLabel))
+	return strings.Join(parts, ";")
 }
 
 type renderProbe struct {

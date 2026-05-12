@@ -3,6 +3,7 @@ package recipe
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"videobatch/internal/config"
@@ -12,7 +13,7 @@ import (
 
 func baseCfg() config.Config {
 	return config.Config{
-		InputDir: "in", OutputDir: "out", Seed: 42, AVSineMode: "independent", MetadataFullMode: "clean_diversify",
+		InputDir: "in", OutputDir: "out", StreamOverlayDir: "./does-not-exist", Seed: 42, AVSineMode: "independent", MetadataFullMode: "clean_diversify",
 		AudioBaseSpeed:      config.SpeedRange{MinPercent: 0.2, MaxPercent: 0.5},
 		VideoBaseSpeed:      config.SpeedRange{MinPercent: 0.2, MaxPercent: 0.5},
 		AudioSine:           config.SineParamsRange{AmplitudeMin: 0.01, AmplitudeMax: 0.02, FrequencyMin: 0.1, FrequencyMax: 0.2, PhaseMin: 0.0, PhaseMax: 1.0},
@@ -32,6 +33,7 @@ func baseCfg() config.Config {
 
 func TestGenerateTemporalPlannerConstraints(t *testing.T) {
 	cfg := baseCfg()
+	installReplacePlannerStubs(t, cfg.InputDir, 30)
 	probe := &ffprobe.ProbeData{Duration: 12, Video: &ffprobe.VideoStream{Fps: 10}}
 
 	rec, err := Generate(cfg, probe)
@@ -56,13 +58,83 @@ func TestGenerateTemporalPlannerConstraints(t *testing.T) {
 
 	usedDonors := map[int64]bool{}
 	for _, ev := range rec.ReplaceEvents {
-		if ev.DonorFrame == ev.Frame {
-			t.Fatalf("donor frame equals target frame: %d", ev.Frame)
+		if ev.DonorPath == "" || ev.DonorPath == rec.StreamOverlay.Path || ev.DonorPath == cfg.InputDir {
+			t.Fatalf("invalid donor path: donor=%q overlay=%q main=%q", ev.DonorPath, rec.StreamOverlay.Path, cfg.InputDir)
+		}
+		if ev.DonorFrame < 0 || ev.DonorFrame >= 30 {
+			t.Fatalf("donor frame out of range: %d", ev.DonorFrame)
 		}
 		if usedDonors[ev.DonorFrame] {
 			t.Fatalf("duplicate donor frame found: %d", ev.DonorFrame)
 		}
 		usedDonors[ev.DonorFrame] = true
+	}
+}
+
+func installReplacePlannerStubs(t *testing.T, mainPath string, donorFrames int64) []string {
+	t.Helper()
+	dir := t.TempDir()
+	overlayPath := filepath.Join(dir, "overlay.mp4")
+	donorPath := filepath.Join(dir, "nested", "donor.mp4")
+	files := []string{mainPath, overlayPath, donorPath}
+	oldDiscover := discoverOverlayFiles
+	oldProbe := probeMedia
+	discoverOverlayFiles = func(string) ([]string, error) { return files, nil }
+	probeMedia = func(context.Context, string) (*ffprobe.ProbeData, error) {
+		return &ffprobe.ProbeData{Duration: float64(donorFrames) / 10.0, Video: &ffprobe.VideoStream{Fps: 10}}, nil
+	}
+	t.Cleanup(func() {
+		discoverOverlayFiles = oldDiscover
+		probeMedia = oldProbe
+	})
+	return files
+}
+
+func TestGenerateReplaceDonorsAreDeterministicDistinctAndUnique(t *testing.T) {
+	cfg := baseCfg()
+	cfg.ReplaceCount = config.EventCountRange{Min: 3, Max: 3}
+	cfg.TmpDir = filepath.Join(t.TempDir(), "jobtmp")
+	installReplacePlannerStubs(t, cfg.InputDir, 8)
+	probe := &ffprobe.ProbeData{Duration: 12, Video: &ffprobe.VideoStream{Fps: 10}}
+
+	first, err := Generate(cfg, probe)
+	if err != nil {
+		t.Fatalf("Generate first failed: %v", err)
+	}
+	second, err := Generate(cfg, probe)
+	if err != nil {
+		t.Fatalf("Generate second failed: %v", err)
+	}
+	if !reflect.DeepEqual(first.ReplaceEvents, second.ReplaceEvents) || first.StreamOverlay != second.StreamOverlay {
+		t.Fatalf("replace donor planning must be deterministic: %+v != %+v", first.ReplaceEvents, second.ReplaceEvents)
+	}
+	seen := map[int64]bool{}
+	for _, ev := range first.ReplaceEvents {
+		if ev.DonorPath == first.StreamOverlay.Path || ev.DonorPath == cfg.InputDir {
+			t.Fatalf("donor must differ from overlay and main: %+v overlay=%q main=%q", ev, first.StreamOverlay.Path, cfg.InputDir)
+		}
+		if seen[ev.DonorFrame] {
+			t.Fatalf("duplicate donor frame: %+v", first.ReplaceEvents)
+		}
+		seen[ev.DonorFrame] = true
+		if filepath.Dir(ev.DonorImagePath) != cfg.TmpDir {
+			t.Fatalf("donor image path must be under tmp dir: %q", ev.DonorImagePath)
+		}
+	}
+}
+
+func TestGenerateReplaceDisabledWhenNoDistinctDonor(t *testing.T) {
+	cfg := baseCfg()
+	oldDiscover := discoverOverlayFiles
+	discoverOverlayFiles = func(string) ([]string, error) { return []string{cfg.InputDir, "overlay.mp4"}, nil }
+	t.Cleanup(func() { discoverOverlayFiles = oldDiscover })
+
+	rec, err := Generate(cfg, &ffprobe.ProbeData{Duration: 12, Video: &ffprobe.VideoStream{Fps: 10}})
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	if rec.ReplaceEffective != 0 || len(rec.ReplaceEvents) != 0 || rec.ReplaceDisabledReason == "" {
+		t.Fatalf("expected replace disabled gracefully, got effective=%d events=%d reason=%q", rec.ReplaceEffective, len(rec.ReplaceEvents), rec.ReplaceDisabledReason)
 	}
 }
 
