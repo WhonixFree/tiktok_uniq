@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -75,7 +76,7 @@ func TestRunStartupChecksReturnsErrorWhenRequiredDependencyMissing(t *testing.T)
 	t.Parallel()
 
 	cfg := config.Config{}
-	logger := slog.New(slog.DiscardHandler)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ctx := context.Background()
 
 	original := startupDependencyProvider
