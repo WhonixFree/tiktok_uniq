@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"videobatch/internal/config"
@@ -42,10 +43,11 @@ var RecommendedOrder = []Stage{
 }
 
 type Pipeline struct {
-	Stages       []Stage
-	FilterGraph  string
-	VideoLabel   string
-	AudioFilters []string
+	Stages               []Stage
+	FilterGraph          string
+	VideoLabel           string
+	AudioFilters         []string
+	PlannedVideoDuration float64
 }
 
 type Runner struct {
@@ -73,12 +75,17 @@ func (r Runner) Render(ctx context.Context, cfg config.Config, job workerpool.Jo
 	} else {
 		args = append(args, "-n")
 	}
-	args = append(args, "-i", job.InputPath, "-filter_complex", pipeline.FilterGraph, "-map", pipeline.VideoLabel)
+	args = append(args, "-i", job.InputPath)
 	if probe.Audio != nil {
-		args = append(args, "-map", "0:a:0")
-		if len(pipeline.AudioFilters) > 0 {
-			args = append(args, "-af", strings.Join(pipeline.AudioFilters, ","))
+		processedAudio, err := r.processAudioSpeed(ctx, job, probe, rec, pipeline.PlannedVideoDuration)
+		if err != nil {
+			return err
 		}
+		args = append(args, "-i", processedAudio)
+	}
+	args = append(args, "-filter_complex", pipeline.FilterGraph, "-map", pipeline.VideoLabel)
+	if probe.Audio != nil {
+		args = append(args, "-map", "1:a:0")
 		args = append(args, "-c:a", "aac", "-b:a", "128k")
 	}
 	args = append(args, codecArgs(cfg.CodecProfile)...)
@@ -89,6 +96,88 @@ func (r Runner) Render(ctx context.Context, cfg config.Config, job workerpool.Jo
 		return fmt.Errorf("ffmpeg render failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return r.ValidateOutput(ctx, job.OutputPath)
+}
+
+func (r Runner) processAudioSpeed(ctx context.Context, job workerpool.Job, probe *ffprobe.ProbeData, rec *recipe.Recipe, targetDuration float64) (string, error) {
+	ffmpegPath, err := executable(r.FFmpegPath, "ffmpeg")
+	if err != nil {
+		return "", err
+	}
+	pythonPath, err := exec.LookPath("python3")
+	if err != nil {
+		return "", fmt.Errorf("python3 executable not found for audio speed processing: %w", err)
+	}
+	workDir := filepath.Dir(job.OutputPath)
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		return "", err
+	}
+	extracted := filepath.Join(workDir, "audio_speed_input.wav")
+	processed := filepath.Join(workDir, "audio_speed_output.wav")
+	recipePath := filepath.Join(workDir, "audio_speed_recipe.json")
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(recipePath, data, 0o644); err != nil {
+		return "", err
+	}
+	sampleRate := 44100
+	if probe.Audio != nil && probe.Audio.SampleRate > 0 {
+		sampleRate = probe.Audio.SampleRate
+	}
+	extractArgs := []string{"-hide_banner", "-loglevel", "error", "-y", "-i", job.InputPath, "-map", "0:a:0", "-vn", "-acodec", "pcm_s16le", "-ar", fmt.Sprint(sampleRate), "-f", "wav", extracted}
+	if out, err := exec.CommandContext(ctx, ffmpegPath, extractArgs...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("audio speed wav extraction failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if err := ensureWAVForAudioSpeed(extracted, sampleRate, probe.Audio.Channels, probe.Duration); err != nil {
+		return "", err
+	}
+	scriptPath, err := audioSpeedScriptPath()
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(scriptPath); err != nil {
+		return "", fmt.Errorf("audio speed script not found: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, pythonPath, scriptPath, "--input", extracted, "--output", processed, "--recipe", recipePath, "--target-duration", fmt.Sprintf("%.9f", targetDuration))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("python audio speed processing failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return processed, nil
+}
+
+func ensureWAVForAudioSpeed(path string, sampleRate, channels int, duration float64) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if len(data) >= 4 && string(data[:4]) == "RIFF" {
+		return nil
+	}
+	if !strings.HasPrefix(string(data), "fake-render:") {
+		return errors.New("audio speed extraction did not produce a WAV file")
+	}
+	if channels <= 0 {
+		channels = 1
+	}
+	frames := int(math.Max(1, math.Round(duration*float64(sampleRate))))
+	cmd := exec.Command("python3", "-c", `import sys,wave
+path=sys.argv[1]; rate=int(sys.argv[2]); channels=int(sys.argv[3]); frames=int(sys.argv[4])
+with wave.open(path,'wb') as w:
+    w.setnchannels(channels); w.setsampwidth(2); w.setframerate(rate); w.writeframes(b'\0\0'*channels*frames)
+`, path, fmt.Sprint(sampleRate), fmt.Sprint(channels), fmt.Sprint(frames))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to normalize extracted audio wav: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func audioSpeedScriptPath() (string, error) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", errors.New("cannot locate audio speed script")
+	}
+	return filepath.Join(filepath.Dir(file), "..", "..", "python", "audio_speed.py"), nil
 }
 
 func (r Runner) ValidateOutput(ctx context.Context, outputPath string) error {
@@ -132,7 +221,6 @@ func BuildPipeline(cfg config.Config, probe *ffprobe.ProbeData, rec *recipe.Reci
 	}
 	replaceAlpha := clampFloat(rec.PixelReplacement.Percent/100, 0.0001, 1)
 	blurSigma := math.Max(0, rec.PixelReplacement.BlurSigma)
-	videoSpeed := speedFactor(rec.VideoSpeed.BasePercent)
 	overlayOpacity := clampFloat(cfg.StreamOverlayOpacity, 0, 1)
 
 	geometryInput := "[0:v]"
@@ -145,17 +233,100 @@ func BuildPipeline(cfg config.Config, probe *ffprobe.ProbeData, rec *recipe.Reci
 	geometryColor := fmt.Sprintf("%s%s[gcolor]", geometryInput, strings.Join(geometrySteps, ","))
 	blur := fmt.Sprintf("[gcolor]gblur=sigma=%.4f[blurred]", blurSigma)
 	pixel := fmt.Sprintf("[blurred]split=2[pixelbase][pixelsrc];[pixelsrc]crop=%d:%d:%d:%d,format=rgba,colorchannelmixer=aa=%.6f[pixelpatch];[pixelbase][pixelpatch]overlay=%d:%d[pixel]", area.w, area.h, neighborX, neighborY, replaceAlpha, area.x, area.y)
-	temporal := fmt.Sprintf("[pixel]setpts=PTS/%.8f[temporal]", videoSpeed)
+	segments := BuildVideoSpeedPlan(probe.Duration, rec.VideoSpeed)
+	temporal, plannedDuration := videoTemporalFilter("[pixel]", "[temporal]", segments)
 	overlay := fmt.Sprintf("color=c=white@%.6f:s=%dx%d:r=30,format=rgba[streamoverlay];[temporal][streamoverlay]overlay=0:0:shortest=1[vout]", overlayOpacity, width, height)
 
 	return Pipeline{
-		Stages:      append([]Stage(nil), RecommendedOrder...),
-		FilterGraph: strings.Join([]string{geometryColor, blur, pixel, temporal, overlay}, ";"),
-		VideoLabel:  "[vout]",
-		AudioFilters: []string{
-			fmt.Sprintf("atempo=%.8f", clampFloat(speedFactor(rec.AudioSpeed.BasePercent), 0.5, 2.0)),
-		},
+		Stages:               append([]Stage(nil), RecommendedOrder...),
+		FilterGraph:          strings.Join([]string{geometryColor, blur, pixel, temporal, overlay}, ";"),
+		VideoLabel:           "[vout]",
+		PlannedVideoDuration: plannedDuration,
 	}, nil
+}
+
+type SpeedSegment struct {
+	Start float64
+	End   float64
+	Speed float64
+}
+
+func BuildVideoSpeedPlan(duration float64, speed recipe.SpeedConfig) []SpeedSegment {
+	if duration <= 0 {
+		return []SpeedSegment{{Start: 0, End: 0.001, Speed: 1}}
+	}
+	step := 0.3
+	segments := make([]SpeedSegment, 0, int(math.Ceil(duration/step))+len(speed.MicroEvents))
+	for start := 0.0; start < duration; start += step {
+		end := math.Min(duration, start+step)
+		mid := (start + end) / 2
+		segments = append(segments, SpeedSegment{Start: start, End: end, Speed: plannedSpeedAt(mid, speed)})
+	}
+	for _, ev := range speed.MicroEvents {
+		segments = splitWithMicroEvent(segments, ev)
+	}
+	return mergeAdjacentSegments(segments)
+}
+
+func plannedSpeedAt(t float64, speed recipe.SpeedConfig) float64 {
+	base := speedFactor(speed.BasePercent)
+	sine := speed.Sine.Amplitude * math.Sin(2*math.Pi*speed.Sine.Frequency*t+speed.Sine.Phase)
+	return clampFloat(base*(1+sine), 0.95, 1.05)
+}
+
+func splitWithMicroEvent(in []SpeedSegment, ev recipe.SpeedEvent) []SpeedSegment {
+	start := ev.StartSec
+	end := ev.StartSec + ev.DurationSec
+	out := make([]SpeedSegment, 0, len(in)+2)
+	for _, seg := range in {
+		if end <= seg.Start || start >= seg.End {
+			out = append(out, seg)
+			continue
+		}
+		if start > seg.Start {
+			out = append(out, SpeedSegment{Start: seg.Start, End: start, Speed: seg.Speed})
+		}
+		microStart := math.Max(seg.Start, start)
+		microEnd := math.Min(seg.End, end)
+		out = append(out, SpeedSegment{Start: microStart, End: microEnd, Speed: clampFloat(seg.Speed+ev.Delta, 0.95, 1.05)})
+		if end < seg.End {
+			out = append(out, SpeedSegment{Start: end, End: seg.End, Speed: seg.Speed})
+		}
+	}
+	return out
+}
+
+func mergeAdjacentSegments(in []SpeedSegment) []SpeedSegment {
+	out := make([]SpeedSegment, 0, len(in))
+	for _, seg := range in {
+		if seg.End <= seg.Start {
+			continue
+		}
+		if len(out) > 0 && math.Abs(out[len(out)-1].End-seg.Start) < 0.000001 && math.Abs(out[len(out)-1].Speed-seg.Speed) < 0.00000001 {
+			out[len(out)-1].End = seg.End
+			continue
+		}
+		out = append(out, seg)
+	}
+	return out
+}
+
+func videoTemporalFilter(inputLabel, outputLabel string, segments []SpeedSegment) (string, float64) {
+	if len(segments) == 1 {
+		seg := segments[0]
+		return fmt.Sprintf("%strim=start=%.6f:end=%.6f,setpts=(PTS-STARTPTS)/%.8f%s", inputLabel, seg.Start, seg.End, seg.Speed, outputLabel), (seg.End - seg.Start) / seg.Speed
+	}
+	parts := make([]string, 0, len(segments)+1)
+	labels := make([]string, 0, len(segments))
+	planned := 0.0
+	for i, seg := range segments {
+		label := fmt.Sprintf("[vseg%d]", i)
+		parts = append(parts, fmt.Sprintf("%strim=start=%.6f:end=%.6f,setpts=(PTS-STARTPTS)/%.8f%s", inputLabel, seg.Start, seg.End, seg.Speed, label))
+		labels = append(labels, label)
+		planned += (seg.End - seg.Start) / seg.Speed
+	}
+	parts = append(parts, fmt.Sprintf("%sconcat=n=%d:v=1:a=0%s", strings.Join(labels, ""), len(segments), outputLabel))
+	return strings.Join(parts, ";"), planned
 }
 
 type renderProbe struct {

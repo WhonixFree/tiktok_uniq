@@ -219,10 +219,10 @@ printf '%s\n' "$*" >> "$FAKE_EXIFTOOL_LOG"
 		}
 	}
 	for _, line := range strings.Split(strings.TrimSpace(ffmpegArgs), "\n") {
-		if strings.Contains(line, "clip_audio") && !strings.Contains(line, "-map 0:a:0") {
-			t.Fatalf("expected audio input to map audio stream, got: %s", line)
+		if strings.Contains(line, "clip_audio") && strings.Contains(line, "rendered.mp4") && !strings.Contains(line, "-map 1:a:0") {
+			t.Fatalf("expected final render to map processed audio stream, got: %s", line)
 		}
-		if strings.Contains(line, "clip_silent") && strings.Contains(line, "-map 0:a:0") {
+		if strings.Contains(line, "clip_silent") && strings.Contains(line, "rendered.mp4") && strings.Contains(line, "-map 1:a:0") {
 			t.Fatalf("expected video-only input to omit audio mapping, got: %s", line)
 		}
 	}

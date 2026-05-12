@@ -67,7 +67,7 @@ func TestBuildPipelineFilterGraphKeepsEffectOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPipeline failed: %v", err)
 	}
-	markers := []string{"scale=", "eq=", "gblur=", "crop=", "[pixel]setpts=", "color=c=white", "[temporal][streamoverlay]overlay=0:0"}
+	markers := []string{"scale=", "eq=", "gblur=", "crop=", "[pixel]trim=", "color=c=white", "[temporal][streamoverlay]overlay=0:0"}
 	last := -1
 	for _, marker := range markers {
 		idx := strings.Index(pipeline.FilterGraph, marker)
@@ -79,8 +79,8 @@ func TestBuildPipelineFilterGraphKeepsEffectOrder(t *testing.T) {
 		}
 		last = idx
 	}
-	if got := strings.Join(pipeline.AudioFilters, ","); !strings.Contains(got, "atempo=") {
-		t.Fatalf("expected audio temporal filter, got %q", got)
+	if got := strings.Join(pipeline.AudioFilters, ","); strings.Contains(got, "atempo=") {
+		t.Fatalf("audio temporal filter must not use atempo, got %q", got)
 	}
 }
 
@@ -95,6 +95,41 @@ func TestBuildPipelineSkipsCropWhenCropDisabled(t *testing.T) {
 	}
 	if strings.Contains(pipeline.FilterGraph, "[0:v]crop=") {
 		t.Fatalf("crop filter must not be emitted when crop is disabled: %s", pipeline.FilterGraph)
+	}
+}
+
+func TestBuildVideoSpeedPlanIsDeterministicAndTracksPlannedDuration(t *testing.T) {
+	speed := recipe.SpeedConfig{
+		BasePercent: 0.5,
+		Sine:        recipe.SineParams{Amplitude: 0.001, Frequency: 0.1, Phase: 0.2},
+		MicroEvents: []recipe.SpeedEvent{{StartSec: 0.45, DurationSec: 0.10, Delta: -0.002}},
+	}
+	first := BuildVideoSpeedPlan(1.2, speed)
+	second := BuildVideoSpeedPlan(1.2, speed)
+	if len(first) != len(second) {
+		t.Fatalf("deterministic plan length mismatch: %d != %d", len(first), len(second))
+	}
+	for i := range first {
+		if first[i] != second[i] {
+			t.Fatalf("plan segment %d mismatch: %+v != %+v", i, first[i], second[i])
+		}
+		if first[i].Speed < 0.95 || first[i].Speed > 1.05 {
+			t.Fatalf("segment speed out of safe bounds: %+v", first[i])
+		}
+	}
+	_, planned := videoTemporalFilter("[pixel]", "[temporal]", first)
+	if planned <= 0 || planned >= 1.2 {
+		t.Fatalf("unexpected planned duration %.6f", planned)
+	}
+}
+
+func TestBuildPipelineExposesPlannedVideoDuration(t *testing.T) {
+	pipeline, err := BuildPipeline(testConfig(), testProbe(true), testRecipe())
+	if err != nil {
+		t.Fatalf("BuildPipeline failed: %v", err)
+	}
+	if pipeline.PlannedVideoDuration <= 0 {
+		t.Fatalf("expected planned duration, got %.6f", pipeline.PlannedVideoDuration)
 	}
 }
 
