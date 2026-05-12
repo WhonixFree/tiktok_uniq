@@ -87,6 +87,9 @@ type Recipe struct {
 	ReplaceDisabledReason  string
 	StreamOverlay          StreamOverlay
 	MinEventDistanceSec    float64
+	TemporalEvents         []TemporalEvent
+	TemporalDroppedEvents  []TemporalDrop
+	TemporalStats          map[TemporalEffectType]TemporalEffectStats
 	PixelReplacement       PixelReplacement
 	Metadata               Metadata
 }
@@ -112,14 +115,28 @@ func GenerateWithSmartAnalyzer(ctx context.Context, cfg config.Config, probe *ff
 	}
 	rec.AudioSpeed = SpeedConfig{BasePercent: randSignedPercent(rng, cfg.AudioBaseSpeed), Sine: audioSine}
 	rec.VideoSpeed = SpeedConfig{BasePercent: randSignedPercent(rng, cfg.VideoBaseSpeed), Sine: videoSine}
-	rec.AudioSpeed.MicroEvents = buildSpeedEvents(rng, probe.Duration, speedMicroCount(probe.Duration), 0.04, 0.14, 0.0008, 0.0030, 0.35)
-	rec.VideoSpeed.MicroEvents = buildSpeedEvents(rng, probe.Duration, speedMicroCount(probe.Duration), 0.05, 0.20, 0.0010, 0.0040, 0.35)
-	rec.AudioSpeed.FreezeEvents = buildAudioFreezeEvents(rng, probe.Duration, audioFreezeCount(probe.Duration), 0.010, 0.040, 0.60)
+
+	audioMicroCandidates := buildSpeedEvents(rng, probe.Duration, speedMicroCount(probe.Duration), 0.04, 0.14, 0.0008, 0.0030, 0.35)
+	videoMicroCandidates := buildSpeedEvents(rng, probe.Duration, speedMicroCount(probe.Duration), 0.05, 0.20, 0.0010, 0.0040, 0.35)
+	audioFreezeCandidates := buildAudioFreezeEvents(rng, probe.Duration, audioFreezeCount(probe.Duration), 0.010, 0.040, 0.60)
 
 	totalFrames := int64(math.Max(1, probe.Duration*probe.Video.Fps))
 	minDistFrames := int64(cfg.MinEventDistanceSec * probe.Video.Fps)
-	rec.FreezeEvents = buildEvents(rng, totalFrames, cfg.FreezeCount.Min, cfg.FreezeCount.Max, minDistFrames, nil)
-	planReplaceEvents(ctx, rng, cfg, rec, totalFrames, minDistFrames)
+	freezeCandidates := buildEvents(rng, totalFrames, cfg.FreezeCount.Min, cfg.FreezeCount.Max, minDistFrames, nil)
+	replaceCandidates := planReplaceCandidateEvents(ctx, rng, cfg, rec, totalFrames, minDistFrames)
+
+	coordination := coordinateTemporalEvents(buildTemporalCandidates(cfg.Seed, probe.Video.Fps, cfg.MinEventDistanceSec, audioMicroCandidates, audioFreezeCandidates, videoMicroCandidates, freezeCandidates, replaceCandidates))
+	rec.AudioSpeed.MicroEvents = coordination.AudioMicro
+	rec.AudioSpeed.FreezeEvents = coordination.AudioFreeze
+	rec.VideoSpeed.MicroEvents = coordination.VideoMicro
+	rec.FreezeEvents = coordination.VideoFreeze
+	rec.ReplaceEvents = coordination.VideoReplace
+	rec.ReplaceEffective = len(rec.ReplaceEvents)
+	rec.TemporalEvents = coordination.Accepted
+	rec.TemporalDroppedEvents = coordination.Dropped
+	rec.TemporalStats = coordination.Stats
+	applyReplaceCoordinationStatus(rec)
+	finalizeTemporalStats(rec)
 
 	rec.PixelReplacement = PixelReplacement{
 		BlurSigma:        randPercent(rng, cfg.PixelBlurSigma.Min, cfg.PixelBlurSigma.Max),
@@ -140,7 +157,7 @@ func GenerateWithSmartAnalyzer(ctx context.Context, cfg config.Config, probe *ff
 var discoverOverlayFiles = overlay.Discover
 var probeMedia = ffprobe.Probe
 
-func planReplaceEvents(ctx context.Context, rng *rand.Rand, cfg config.Config, rec *Recipe, totalFrames, minDistFrames int64) {
+func planReplaceCandidateEvents(ctx context.Context, rng *rand.Rand, cfg config.Config, rec *Recipe, totalFrames, minDistFrames int64) []Event {
 	requested := cfg.ReplaceCount.Min
 	if cfg.ReplaceCount.Max > cfg.ReplaceCount.Min {
 		requested += rng.Intn(cfg.ReplaceCount.Max - cfg.ReplaceCount.Min + 1)
@@ -148,14 +165,14 @@ func planReplaceEvents(ctx context.Context, rng *rand.Rand, cfg config.Config, r
 	rec.ReplaceRequested = requested
 	if requested <= 0 {
 		rec.ReplaceEffective = 0
-		return
+		return nil
 	}
 
 	overlayPath, donorPath, donorFrames, reason := selectOverlayAndDonor(ctx, rng, cfg)
 	if reason != "" {
 		rec.ReplaceDisabledReason = reason
 		rec.ReplaceEffective = 0
-		return
+		return nil
 	}
 	rec.StreamOverlay = StreamOverlay{Path: overlayPath}
 	if donorFrames < int64(requested) {
@@ -165,21 +182,94 @@ func planReplaceEvents(ctx context.Context, rng *rand.Rand, cfg config.Config, r
 	if requested <= 0 {
 		rec.ReplaceDisabledReason = "donor stream has no available frames"
 		rec.ReplaceEffective = 0
-		return
+		return nil
 	}
 
-	replace := buildEvents(rng, totalFrames, requested, requested, minDistFrames, rec.FreezeEvents)
+	replace := buildEvents(rng, totalFrames, requested, requested, minDistFrames, nil)
 	if len(replace) == 0 {
 		rec.ReplaceDisabledReason = "no valid replace target frames after spacing constraints"
 		rec.ReplaceEffective = 0
-		return
-	}
-	if len(replace) < rec.ReplaceRequested && rec.ReplaceDisabledReason == "" {
-		rec.ReplaceDisabledReason = fmt.Sprintf("replace events reduced: spacing constraints allowed %d of %d requested", len(replace), rec.ReplaceRequested)
+		return nil
 	}
 	assignDonorFrames(rng, replace, donorPath, donorFrames, cfg.TmpDir)
-	rec.ReplaceEvents = replace
-	rec.ReplaceEffective = len(replace)
+	return replace
+}
+
+func buildTemporalCandidates(seed int64, fps, minDistanceSec float64, audioMicro []SpeedEvent, audioFreeze []AudioFreezeEvent, videoMicro []SpeedEvent, videoFreeze []Event, videoReplace []Event) []temporalCandidate {
+	frameDuration := 1.0 / fps
+	if fps <= 0 {
+		frameDuration = 1.0 / 30.0
+	}
+	minMicro := temporalMinDistance(minDistanceSec, 0.35)
+	minAudioFreeze := temporalMinDistance(minDistanceSec, 0.60)
+	out := make([]temporalCandidate, 0, len(videoFreeze)+len(videoReplace)+len(audioMicro)+len(audioFreeze)+len(videoMicro))
+
+	// Register hard frame-exact events first, then soft events. This preserves the
+	// one-frame visual guarantees while still applying global spacing to all later
+	// accepted temporal events deterministically.
+	for i := range videoFreeze {
+		ev := videoFreeze[i]
+		start := float64(ev.Frame) * frameDuration
+		out = append(out, temporalCandidate{event: TemporalEvent{ID: temporalID(EffectVideoFreeze, i), EffectType: EffectVideoFreeze, StartSec: round6(start), EndSec: round6(start + frameDuration), Hardness: HardnessHard, MinDistanceSec: minDistanceSec, SeedLineage: temporalSeedLineage(seed, EffectVideoFreeze, i), Frame: ev.Frame}, videoEvent: &videoFreeze[i]})
+	}
+	for i := range videoReplace {
+		ev := videoReplace[i]
+		start := float64(ev.Frame) * frameDuration
+		out = append(out, temporalCandidate{event: TemporalEvent{ID: temporalID(EffectVideoReplace, i), EffectType: EffectVideoReplace, StartSec: round6(start), EndSec: round6(start + frameDuration), Hardness: HardnessHard, MinDistanceSec: minDistanceSec, SeedLineage: temporalSeedLineage(seed, EffectVideoReplace, i), Frame: ev.Frame}, videoEvent: &videoReplace[i]})
+	}
+	for i := range audioMicro {
+		ev := audioMicro[i]
+		out = append(out, temporalCandidate{event: TemporalEvent{ID: temporalID(EffectAudioMicro, i), EffectType: EffectAudioMicro, StartSec: ev.StartSec, EndSec: round6(ev.StartSec + ev.DurationSec), Hardness: HardnessSoft, MinDistanceSec: minMicro, SeedLineage: temporalSeedLineage(seed, EffectAudioMicro, i)}, audioMicro: &audioMicro[i]})
+	}
+	for i := range audioFreeze {
+		ev := audioFreeze[i]
+		out = append(out, temporalCandidate{event: TemporalEvent{ID: temporalID(EffectAudioFreeze, i), EffectType: EffectAudioFreeze, StartSec: ev.StartSec, EndSec: round6(ev.StartSec + ev.DurationSec), Hardness: HardnessSoft, MinDistanceSec: minAudioFreeze, SeedLineage: temporalSeedLineage(seed, EffectAudioFreeze, i)}, audioFreeze: &audioFreeze[i]})
+	}
+	for i := range videoMicro {
+		ev := videoMicro[i]
+		out = append(out, temporalCandidate{event: TemporalEvent{ID: temporalID(EffectVideoMicro, i), EffectType: EffectVideoMicro, StartSec: ev.StartSec, EndSec: round6(ev.StartSec + ev.DurationSec), Hardness: HardnessSoft, MinDistanceSec: minMicro, SeedLineage: temporalSeedLineage(seed, EffectVideoMicro, i)}, videoMicro: &videoMicro[i]})
+	}
+	return out
+}
+
+func temporalID(effect TemporalEffectType, index int) string {
+	return fmt.Sprintf("%s_%03d", effect, index)
+}
+
+func temporalSeedLineage(seed int64, effect TemporalEffectType, index int) string {
+	return fmt.Sprintf("seed:%d:%s:%03d", seed, effect, index)
+}
+
+func applyReplaceCoordinationStatus(rec *Recipe) {
+	if rec.ReplaceRequested == 0 || rec.ReplaceDisabledReason != "" {
+		return
+	}
+	if rec.ReplaceEffective < rec.ReplaceRequested {
+		rec.ReplaceDisabledReason = fmt.Sprintf("replace events reduced: temporal coordination allowed %d of %d requested", rec.ReplaceEffective, rec.ReplaceRequested)
+	}
+}
+
+func finalizeTemporalStats(rec *Recipe) {
+	if rec.TemporalStats == nil {
+		rec.TemporalStats = map[TemporalEffectType]TemporalEffectStats{}
+	}
+	for _, effect := range []TemporalEffectType{EffectAudioMicro, EffectAudioFreeze, EffectVideoMicro, EffectVideoFreeze, EffectVideoReplace} {
+		if _, ok := rec.TemporalStats[effect]; !ok {
+			rec.TemporalStats[effect] = TemporalEffectStats{}
+		}
+	}
+	replaceStats := rec.TemporalStats[EffectVideoReplace]
+	if rec.ReplaceRequested > replaceStats.Requested {
+		replaceStats.Requested = rec.ReplaceRequested
+	}
+	replaceStats.Effective = rec.ReplaceEffective
+	if replaceStats.Requested > replaceStats.Effective {
+		replaceStats.Dropped = replaceStats.Requested - replaceStats.Effective
+	}
+	if rec.ReplaceDisabledReason != "" && replaceStats.Dropped > 0 {
+		replaceStats.DropReasons = append(replaceStats.DropReasons, rec.ReplaceDisabledReason)
+	}
+	rec.TemporalStats[EffectVideoReplace] = replaceStats
 }
 
 func selectOverlayAndDonor(ctx context.Context, rng *rand.Rand, cfg config.Config) (string, string, int64, string) {

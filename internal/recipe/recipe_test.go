@@ -3,6 +3,7 @@ package recipe
 import (
 	"context"
 	"errors"
+	"math"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -171,14 +172,17 @@ func TestGenerateSpeedMicroEventsAreDeterministicAndDurationDependent(t *testing
 	if err != nil {
 		t.Fatalf("Generate long failed: %v", err)
 	}
-	if len(shortA.AudioSpeed.MicroEvents) != speedMicroCount(probeShort.Duration) || len(longRec.AudioSpeed.MicroEvents) != speedMicroCount(probeLong.Duration) {
-		t.Fatalf("unexpected audio micro counts short=%d long=%d", len(shortA.AudioSpeed.MicroEvents), len(longRec.AudioSpeed.MicroEvents))
+	if shortA.TemporalStats[EffectAudioMicro].Requested != speedMicroCount(probeShort.Duration) || longRec.TemporalStats[EffectAudioMicro].Requested != speedMicroCount(probeLong.Duration) {
+		t.Fatalf("unexpected requested audio micro counts short=%d long=%d", shortA.TemporalStats[EffectAudioMicro].Requested, longRec.TemporalStats[EffectAudioMicro].Requested)
 	}
-	if len(longRec.AudioSpeed.MicroEvents) <= len(shortA.AudioSpeed.MicroEvents) {
-		t.Fatalf("expected longer media to receive more micro events, short=%d long=%d", len(shortA.AudioSpeed.MicroEvents), len(longRec.AudioSpeed.MicroEvents))
+	if longRec.TemporalStats[EffectAudioMicro].Requested <= shortA.TemporalStats[EffectAudioMicro].Requested {
+		t.Fatalf("expected longer media to request more micro events, short=%d long=%d", shortA.TemporalStats[EffectAudioMicro].Requested, longRec.TemporalStats[EffectAudioMicro].Requested)
 	}
-	if len(shortA.AudioSpeed.FreezeEvents) != audioFreezeCount(probeShort.Duration) || len(longRec.AudioSpeed.FreezeEvents) != audioFreezeCount(probeLong.Duration) {
-		t.Fatalf("unexpected audio freeze counts short=%d long=%d", len(shortA.AudioSpeed.FreezeEvents), len(longRec.AudioSpeed.FreezeEvents))
+	if len(shortA.AudioSpeed.MicroEvents) > shortA.TemporalStats[EffectAudioMicro].Requested || len(longRec.AudioSpeed.MicroEvents) > longRec.TemporalStats[EffectAudioMicro].Requested {
+		t.Fatalf("effective audio micro counts must not exceed requested, short=%d/%d long=%d/%d", len(shortA.AudioSpeed.MicroEvents), shortA.TemporalStats[EffectAudioMicro].Requested, len(longRec.AudioSpeed.MicroEvents), longRec.TemporalStats[EffectAudioMicro].Requested)
+	}
+	if shortA.TemporalStats[EffectAudioFreeze].Requested != audioFreezeCount(probeShort.Duration) || longRec.TemporalStats[EffectAudioFreeze].Requested != audioFreezeCount(probeLong.Duration) {
+		t.Fatalf("unexpected requested audio freeze counts short=%d long=%d", shortA.TemporalStats[EffectAudioFreeze].Requested, longRec.TemporalStats[EffectAudioFreeze].Requested)
 	}
 }
 
@@ -288,5 +292,73 @@ func TestGenerateMetadataFullModeCleanAndDiversify(t *testing.T) {
 	}
 	if len(rec.Metadata.Diversify) == 0 {
 		t.Fatal("expected diversify tags")
+	}
+}
+
+func TestTemporalCoordinatorCrossEffectSpacing(t *testing.T) {
+	fps := 25.0
+	minDistance := 0.4
+	candidates := buildTemporalCandidates(99, fps, minDistance,
+		[]SpeedEvent{{StartSec: 1.0, DurationSec: 0.10, Delta: 0.001}},
+		nil,
+		[]SpeedEvent{{StartSec: 2.0, DurationSec: 0.10, Delta: -0.001}},
+		[]Event{{Frame: 50}},
+		[]Event{{Frame: 25, DonorPath: "donor.mp4", DonorImagePath: "donor.png"}},
+	)
+	result := coordinateTemporalEvents(candidates)
+	if len(result.VideoReplace) != 1 || len(result.AudioMicro) != 0 {
+		t.Fatalf("audio micro must not collide with video replace, audio=%d replace=%d drops=%+v", len(result.AudioMicro), len(result.VideoReplace), result.Dropped)
+	}
+	if len(result.VideoFreeze) != 1 || len(result.VideoMicro) != 0 {
+		t.Fatalf("video micro must not collide with freeze, micro=%d freeze=%d drops=%+v", len(result.VideoMicro), len(result.VideoFreeze), result.Dropped)
+	}
+}
+
+func TestTemporalCoordinatorDeterminism(t *testing.T) {
+	cfg := baseCfg()
+	installReplacePlannerStubs(t, cfg.InputDir, 60)
+	probe := &ffprobe.ProbeData{Duration: 12, Video: &ffprobe.VideoStream{Fps: 10}}
+
+	first, err := Generate(cfg, probe)
+	if err != nil {
+		t.Fatalf("Generate first failed: %v", err)
+	}
+	second, err := Generate(cfg, probe)
+	if err != nil {
+		t.Fatalf("Generate second failed: %v", err)
+	}
+	if !reflect.DeepEqual(first.TemporalEvents, second.TemporalEvents) || !reflect.DeepEqual(first.TemporalDroppedEvents, second.TemporalDroppedEvents) || !reflect.DeepEqual(first.TemporalStats, second.TemporalStats) {
+		t.Fatalf("coordinated temporal results must be deterministic:\nfirst=%+v drops=%+v stats=%+v\nsecond=%+v drops=%+v stats=%+v", first.TemporalEvents, first.TemporalDroppedEvents, first.TemporalStats, second.TemporalEvents, second.TemporalDroppedEvents, second.TemporalStats)
+	}
+}
+
+func TestTemporalCoordinatorDegradesWhenConstraintsImpossible(t *testing.T) {
+	result := coordinateTemporalEvents([]temporalCandidate{
+		{event: TemporalEvent{ID: "hard_0", EffectType: EffectVideoFreeze, StartSec: 1.0, EndSec: 1.04, Hardness: HardnessHard, MinDistanceSec: 10}, videoEvent: &Event{Frame: 25}},
+		{event: TemporalEvent{ID: "hard_1", EffectType: EffectVideoReplace, StartSec: 1.02, EndSec: 1.06, Hardness: HardnessHard, MinDistanceSec: 10}, videoEvent: &Event{Frame: 26}},
+		{event: TemporalEvent{ID: "soft_0", EffectType: EffectAudioMicro, StartSec: 1.5, EndSec: 1.6, Hardness: HardnessSoft, MinDistanceSec: 10}, audioMicro: &SpeedEvent{StartSec: 1.5, DurationSec: 0.1, Delta: 0.001}},
+	})
+	if result.Stats[EffectVideoFreeze].Effective != 1 {
+		t.Fatalf("expected first hard event to be accepted: %+v", result.Stats)
+	}
+	if result.Stats[EffectVideoReplace].Dropped != 1 || result.Stats[EffectAudioMicro].Dropped != 1 {
+		t.Fatalf("expected impossible constraints to reduce later counts, stats=%+v drops=%+v", result.Stats, result.Dropped)
+	}
+}
+
+func TestTemporalCoordinatorFrameExactness(t *testing.T) {
+	fps := 25.0
+	result := coordinateTemporalEvents(buildTemporalCandidates(7, fps, 0,
+		nil, nil, nil,
+		[]Event{{Frame: 10}},
+		[]Event{{Frame: 12, DonorPath: "donor.mp4", DonorImagePath: "donor.png"}},
+	))
+	for _, ev := range result.Accepted {
+		if ev.EffectType != EffectVideoFreeze && ev.EffectType != EffectVideoReplace {
+			continue
+		}
+		if got, want := ev.EndSec-ev.StartSec, 1.0/fps; math.Abs(got-want) > 0.000001 {
+			t.Fatalf("%s is not exactly one frame: got %.9f want %.9f event=%+v", ev.EffectType, got, want, ev)
+		}
 	}
 }
