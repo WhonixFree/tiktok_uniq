@@ -143,10 +143,15 @@ Sine mode:
 ## 6.5 Replace events (1-frame video)
 - Replace-событие — это замена ровно **1 кадра**.
 - Кадр берется из **другого** stream source (не из того же фонового сегмента).
+- Донорские кадры sourced из video assets, найденных через `--stream-overlay-dir`, используя ту же рекурсивную discovery-логику, что и stream overlay.
+- Для каждого ролика выбирается один overlay stream и один donor stream; donor stream обязан отличаться от overlay stream и от main input video.
 - Количество replace-событий зависит от длительности ролика.
 - Моменты выбираются случайно.
 - Обязательна проверка минимальной дистанции между temporal-событиями.
 - Каждый replace обязан использовать **уникальный донорский кадр** (без повторов в рамках одного ролика).
+- Replace реализуется runtime через piecewise temporal segmentation: основной видеопоток режется на сегменты до target frame, ровно один donor frame, затем сегменты после target frame; сегменты соединяются через `concat`.
+- Replace не должен использовать `overlay enable` expressions; замена должна сохранять fps и непрерывность timeline.
+- Все donor decisions (donor path, donor frame index, temp PNG path/effective count) фиксируются в recipe на planning stage; render только извлекает и потребляет эти инструкции.
 
 ---
 

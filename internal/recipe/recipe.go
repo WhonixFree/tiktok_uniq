@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"path/filepath"
 	"reflect"
 	"sort"
+
 	"videobatch/internal/config"
 	"videobatch/internal/ffprobe"
+	"videobatch/internal/overlay"
 	"videobatch/internal/pixel"
 )
 
@@ -31,8 +34,14 @@ type SpeedConfig struct {
 	FreezeEvents []AudioFreezeEvent
 }
 type Event struct {
-	Frame      int64
-	DonorFrame int64
+	Frame          int64
+	DonorFrame     int64
+	DonorPath      string
+	DonorImagePath string
+}
+
+type StreamOverlay struct {
+	Path string
 }
 
 type PixelReplacement struct {
@@ -73,6 +82,10 @@ type Recipe struct {
 	AVSineMode             string
 	FreezeEvents           []Event
 	ReplaceEvents          []Event
+	ReplaceRequested       int
+	ReplaceEffective       int
+	ReplaceDisabledReason  string
+	StreamOverlay          StreamOverlay
 	MinEventDistanceSec    float64
 	PixelReplacement       PixelReplacement
 	Metadata               Metadata
@@ -106,7 +119,7 @@ func GenerateWithSmartAnalyzer(ctx context.Context, cfg config.Config, probe *ff
 	totalFrames := int64(math.Max(1, probe.Duration*probe.Video.Fps))
 	minDistFrames := int64(cfg.MinEventDistanceSec * probe.Video.Fps)
 	rec.FreezeEvents = buildEvents(rng, totalFrames, cfg.FreezeCount.Min, cfg.FreezeCount.Max, minDistFrames, nil)
-	rec.ReplaceEvents = buildReplaceEvents(rng, totalFrames, cfg.ReplaceCount.Min, cfg.ReplaceCount.Max, minDistFrames, rec.FreezeEvents)
+	planReplaceEvents(ctx, rng, cfg, rec, totalFrames, minDistFrames)
 
 	rec.PixelReplacement = PixelReplacement{
 		BlurSigma:        randPercent(rng, cfg.PixelBlurSigma.Min, cfg.PixelBlurSigma.Max),
@@ -122,6 +135,116 @@ func GenerateWithSmartAnalyzer(ctx context.Context, cfg config.Config, probe *ff
 		applySmartArea(ctx, rec, cfg, probe, analyzer)
 	}
 	return rec, nil
+}
+
+var discoverOverlayFiles = overlay.Discover
+var probeMedia = ffprobe.Probe
+
+func planReplaceEvents(ctx context.Context, rng *rand.Rand, cfg config.Config, rec *Recipe, totalFrames, minDistFrames int64) {
+	requested := cfg.ReplaceCount.Min
+	if cfg.ReplaceCount.Max > cfg.ReplaceCount.Min {
+		requested += rng.Intn(cfg.ReplaceCount.Max - cfg.ReplaceCount.Min + 1)
+	}
+	rec.ReplaceRequested = requested
+	if requested <= 0 {
+		rec.ReplaceEffective = 0
+		return
+	}
+
+	overlayPath, donorPath, donorFrames, reason := selectOverlayAndDonor(ctx, rng, cfg)
+	if reason != "" {
+		rec.ReplaceDisabledReason = reason
+		rec.ReplaceEffective = 0
+		return
+	}
+	rec.StreamOverlay = StreamOverlay{Path: overlayPath}
+	if donorFrames < int64(requested) {
+		rec.ReplaceDisabledReason = fmt.Sprintf("replace events reduced: donor frame count %d is below requested %d", donorFrames, requested)
+		requested = int(donorFrames)
+	}
+	if requested <= 0 {
+		rec.ReplaceDisabledReason = "donor stream has no available frames"
+		rec.ReplaceEffective = 0
+		return
+	}
+
+	replace := buildEvents(rng, totalFrames, requested, requested, minDistFrames, rec.FreezeEvents)
+	if len(replace) == 0 {
+		rec.ReplaceDisabledReason = "no valid replace target frames after spacing constraints"
+		rec.ReplaceEffective = 0
+		return
+	}
+	if len(replace) < rec.ReplaceRequested && rec.ReplaceDisabledReason == "" {
+		rec.ReplaceDisabledReason = fmt.Sprintf("replace events reduced: spacing constraints allowed %d of %d requested", len(replace), rec.ReplaceRequested)
+	}
+	assignDonorFrames(rng, replace, donorPath, donorFrames, cfg.TmpDir)
+	rec.ReplaceEvents = replace
+	rec.ReplaceEffective = len(replace)
+}
+
+func selectOverlayAndDonor(ctx context.Context, rng *rand.Rand, cfg config.Config) (string, string, int64, string) {
+	files, err := discoverOverlayFiles(cfg.StreamOverlayDir)
+	if err != nil {
+		return "", "", 0, fmt.Sprintf("replace disabled: %v", err)
+	}
+	mainPath := canonicalPath(cfg.InputDir)
+	validOverlay := make([]string, 0, len(files))
+	for _, file := range files {
+		if canonicalPath(file) != mainPath {
+			validOverlay = append(validOverlay, file)
+		}
+	}
+	if len(validOverlay) == 0 {
+		return "", "", 0, "replace disabled: no overlay stream distinct from main input"
+	}
+	overlayPath := validOverlay[rng.Intn(len(validOverlay))]
+	validDonors := make([]string, 0, len(validOverlay))
+	for _, file := range validOverlay {
+		if canonicalPath(file) != canonicalPath(overlayPath) {
+			validDonors = append(validDonors, file)
+		}
+	}
+	if len(validDonors) == 0 {
+		return overlayPath, "", 0, "replace disabled: no donor stream distinct from overlay and main input"
+	}
+	donorPath := validDonors[rng.Intn(len(validDonors))]
+	donorProbe, err := probeMedia(ctx, donorPath)
+	if err != nil {
+		return overlayPath, donorPath, 0, fmt.Sprintf("replace disabled: donor probe failed: %v", err)
+	}
+	if donorProbe.Video == nil || donorProbe.Video.Fps <= 0 || donorProbe.Duration <= 0 {
+		return overlayPath, donorPath, 0, "replace disabled: donor stream has invalid video timing"
+	}
+	donorFrames := int64(math.Floor(donorProbe.Duration * donorProbe.Video.Fps))
+	if donorFrames <= 0 {
+		return overlayPath, donorPath, 0, "replace disabled: donor stream has no frames"
+	}
+	return overlayPath, donorPath, donorFrames, ""
+}
+
+func assignDonorFrames(rng *rand.Rand, events []Event, donorPath string, donorFrames int64, tmpDir string) {
+	used := map[int64]bool{}
+	for i := range events {
+		for {
+			donor := int64(rng.Int63n(donorFrames))
+			if used[donor] {
+				continue
+			}
+			used[donor] = true
+			events[i].DonorFrame = donor
+			events[i].DonorPath = donorPath
+			events[i].DonorImagePath = filepath.Join(tmpDir, fmt.Sprintf("replace_donor_%03d.png", i))
+			break
+		}
+	}
+}
+
+func canonicalPath(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return filepath.Clean(abs)
 }
 
 func metadataFull(rng *rand.Rand, mode string) Metadata {
@@ -234,26 +357,6 @@ func buildEvents(rng *rand.Rand, totalFrames int64, minCount, maxCount int, minD
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Frame < out[j].Frame })
 	return out
-}
-
-func buildReplaceEvents(rng *rand.Rand, totalFrames int64, minCount, maxCount int, minDist int64, freezeEvents []Event) []Event {
-	replace := buildEvents(rng, totalFrames, minCount, maxCount, minDist, freezeEvents)
-	if len(replace) == 0 {
-		return nil
-	}
-	usedDonors := map[int64]bool{}
-	for i := range replace {
-		for {
-			donor := int64(rng.Int63n(totalFrames))
-			if donor == replace[i].Frame || usedDonors[donor] {
-				continue
-			}
-			usedDonors[donor] = true
-			replace[i].DonorFrame = donor
-			break
-		}
-	}
-	return replace
 }
 
 func speedMicroCount(durationSec float64) int {

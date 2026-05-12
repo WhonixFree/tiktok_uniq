@@ -193,6 +193,7 @@ func processingHandler(cfg config.Config) workerpool.Handler {
 		jobCfg := cfg
 		jobCfg.InputDir = job.InputPath
 		jobCfg.OutputDir = job.OutputPath
+		jobCfg.TmpDir = jobTmpDir
 		rec, err := generateRecipeFunc(ctx, jobCfg, probeData, nil)
 		if err != nil {
 			return fail("recipe", err)
