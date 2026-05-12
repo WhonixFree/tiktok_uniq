@@ -14,9 +14,21 @@ import (
 )
 
 type SineParams struct{ Amplitude, Frequency, Phase float64 }
+type SpeedEvent struct {
+	StartSec    float64
+	DurationSec float64
+	Delta       float64
+}
+type AudioFreezeEvent struct {
+	StartSec    float64
+	DurationSec float64
+	Repeats     int
+}
 type SpeedConfig struct {
-	BasePercent float64
-	Sine        SineParams
+	BasePercent  float64
+	Sine         SineParams
+	MicroEvents  []SpeedEvent
+	FreezeEvents []AudioFreezeEvent
 }
 type Event struct {
 	Frame      int64
@@ -87,6 +99,9 @@ func GenerateWithSmartAnalyzer(ctx context.Context, cfg config.Config, probe *ff
 	}
 	rec.AudioSpeed = SpeedConfig{BasePercent: randSignedPercent(rng, cfg.AudioBaseSpeed), Sine: audioSine}
 	rec.VideoSpeed = SpeedConfig{BasePercent: randSignedPercent(rng, cfg.VideoBaseSpeed), Sine: videoSine}
+	rec.AudioSpeed.MicroEvents = buildSpeedEvents(rng, probe.Duration, speedMicroCount(probe.Duration), 0.04, 0.14, 0.0008, 0.0030, 0.35)
+	rec.VideoSpeed.MicroEvents = buildSpeedEvents(rng, probe.Duration, speedMicroCount(probe.Duration), 0.05, 0.20, 0.0010, 0.0040, 0.35)
+	rec.AudioSpeed.FreezeEvents = buildAudioFreezeEvents(rng, probe.Duration, audioFreezeCount(probe.Duration), 0.010, 0.040, 0.60)
 
 	totalFrames := int64(math.Max(1, probe.Duration*probe.Video.Fps))
 	minDistFrames := int64(cfg.MinEventDistanceSec * probe.Video.Fps)
@@ -240,6 +255,102 @@ func buildReplaceEvents(rng *rand.Rand, totalFrames int64, minCount, maxCount in
 	}
 	return replace
 }
+
+func speedMicroCount(durationSec float64) int {
+	if durationSec <= 0 {
+		return 0
+	}
+	count := int(math.Ceil(durationSec / 12.0))
+	if count < 1 {
+		return 1
+	}
+	if count > 10 {
+		return 10
+	}
+	return count
+}
+
+func audioFreezeCount(durationSec float64) int {
+	if durationSec < 2 {
+		return 0
+	}
+	count := int(math.Ceil(durationSec / 18.0))
+	if count < 1 {
+		return 1
+	}
+	if count > 6 {
+		return 6
+	}
+	return count
+}
+
+func buildSpeedEvents(rng *rand.Rand, durationSec float64, count int, minDuration, maxDuration, minDelta, maxDelta, minSpacing float64) []SpeedEvent {
+	if count <= 0 || durationSec <= minDuration {
+		return nil
+	}
+	out := make([]SpeedEvent, 0, count)
+	maxAttempts := int(math.Max(float64(count*64), 64))
+	for attempts := 0; len(out) < count && attempts < maxAttempts; attempts++ {
+		eventDuration := randPercent(rng, minDuration, maxDuration)
+		latestStart := math.Max(0, durationSec-eventDuration)
+		candidate := rng.Float64() * latestStart
+		if !timeWindowAvailable(candidate, candidate+eventDuration, minSpacing, out, nil) {
+			continue
+		}
+		delta := randPercent(rng, minDelta, maxDelta)
+		if rng.Intn(2) == 0 {
+			delta = -delta
+		}
+		out = append(out, SpeedEvent{StartSec: round6(candidate), DurationSec: round6(eventDuration), Delta: round8(delta)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartSec < out[j].StartSec })
+	return out
+}
+
+func buildAudioFreezeEvents(rng *rand.Rand, durationSec float64, count int, minDuration, maxDuration, minSpacing float64) []AudioFreezeEvent {
+	if count <= 0 || durationSec <= minDuration {
+		return nil
+	}
+	out := make([]AudioFreezeEvent, 0, count)
+	maxAttempts := int(math.Max(float64(count*64), 64))
+	for attempts := 0; len(out) < count && attempts < maxAttempts; attempts++ {
+		eventDuration := randPercent(rng, minDuration, maxDuration)
+		latestStart := math.Max(0, durationSec-eventDuration)
+		candidate := rng.Float64() * latestStart
+		if !freezeWindowAvailable(candidate, candidate+eventDuration, minSpacing, out) {
+			continue
+		}
+		out = append(out, AudioFreezeEvent{StartSec: round6(candidate), DurationSec: round6(eventDuration), Repeats: 2 + rng.Intn(3)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartSec < out[j].StartSec })
+	return out
+}
+
+func timeWindowAvailable(start, end, spacing float64, events []SpeedEvent, blocked []SpeedEvent) bool {
+	for _, ev := range events {
+		if start < ev.StartSec+ev.DurationSec+spacing && end+spacing > ev.StartSec {
+			return false
+		}
+	}
+	for _, ev := range blocked {
+		if start < ev.StartSec+ev.DurationSec+spacing && end+spacing > ev.StartSec {
+			return false
+		}
+	}
+	return true
+}
+
+func freezeWindowAvailable(start, end, spacing float64, events []AudioFreezeEvent) bool {
+	for _, ev := range events {
+		if start < ev.StartSec+ev.DurationSec+spacing && end+spacing > ev.StartSec {
+			return false
+		}
+	}
+	return true
+}
+
+func round6(v float64) float64 { return math.Round(v*1_000_000) / 1_000_000 }
+func round8(v float64) float64 { return math.Round(v*100_000_000) / 100_000_000 }
 func abs64(v int64) int64 {
 	if v < 0 {
 		return -v

@@ -3,6 +3,7 @@ package recipe
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"videobatch/internal/config"
 	"videobatch/internal/ffprobe"
@@ -75,6 +76,37 @@ func TestGenerateSineLockMode(t *testing.T) {
 	}
 	if rec.AudioSpeed.Sine != rec.VideoSpeed.Sine {
 		t.Fatal("expected locked sine params for audio/video")
+	}
+}
+
+func TestGenerateSpeedMicroEventsAreDeterministicAndDurationDependent(t *testing.T) {
+	cfg := baseCfg()
+	probeShort := &ffprobe.ProbeData{Duration: 10, Video: &ffprobe.VideoStream{Fps: 30}}
+	probeLong := &ffprobe.ProbeData{Duration: 30, Video: &ffprobe.VideoStream{Fps: 30}}
+
+	shortA, err := Generate(cfg, probeShort)
+	if err != nil {
+		t.Fatalf("Generate short A failed: %v", err)
+	}
+	shortB, err := Generate(cfg, probeShort)
+	if err != nil {
+		t.Fatalf("Generate short B failed: %v", err)
+	}
+	if !reflect.DeepEqual(shortA.AudioSpeed.MicroEvents, shortB.AudioSpeed.MicroEvents) || !reflect.DeepEqual(shortA.VideoSpeed.MicroEvents, shortB.VideoSpeed.MicroEvents) {
+		t.Fatal("speed micro event planning must be deterministic for the same seed")
+	}
+	longRec, err := Generate(cfg, probeLong)
+	if err != nil {
+		t.Fatalf("Generate long failed: %v", err)
+	}
+	if len(shortA.AudioSpeed.MicroEvents) != speedMicroCount(probeShort.Duration) || len(longRec.AudioSpeed.MicroEvents) != speedMicroCount(probeLong.Duration) {
+		t.Fatalf("unexpected audio micro counts short=%d long=%d", len(shortA.AudioSpeed.MicroEvents), len(longRec.AudioSpeed.MicroEvents))
+	}
+	if len(longRec.AudioSpeed.MicroEvents) <= len(shortA.AudioSpeed.MicroEvents) {
+		t.Fatalf("expected longer media to receive more micro events, short=%d long=%d", len(shortA.AudioSpeed.MicroEvents), len(longRec.AudioSpeed.MicroEvents))
+	}
+	if len(shortA.AudioSpeed.FreezeEvents) != audioFreezeCount(probeShort.Duration) || len(longRec.AudioSpeed.FreezeEvents) != audioFreezeCount(probeLong.Duration) {
+		t.Fatalf("unexpected audio freeze counts short=%d long=%d", len(shortA.AudioSpeed.FreezeEvents), len(longRec.AudioSpeed.FreezeEvents))
 	}
 }
 
