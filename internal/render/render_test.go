@@ -210,9 +210,9 @@ func TestRenderIntegrationValidatesOutputIntegrityAndAVSync(t *testing.T) {
 	}
 }
 
-func TestVideoReplaceFilterUsesPiecewiseOneFrameConcat(t *testing.T) {
+func TestVideoTemporalEventFilterUsesPiecewiseOneFrameReplaceConcat(t *testing.T) {
 	events := []recipe.Event{{Frame: 2, DonorFrame: 7, DonorPath: "donor.mp4", DonorImagePath: "replace_donor_000.png"}}
-	graph := videoReplaceFilter("[speeded]", "[temporal]", events, 1, 25, 1, 64, 64)
+	graph := videoTemporalEventFilter("[speeded]", "[temporal]", nil, events, 1, 25, 1, 64, 64)
 	want := []string{
 		"[speeded]trim=start=0.000000000:end=0.080000000,setpts=PTS-STARTPTS[rseg0]",
 		"[1:v]scale=64:64,setsar=1,format=rgba,fps=fps=25.00000000,trim=duration=0.040000000,setpts=PTS-STARTPTS[rdonor0]",
@@ -226,6 +226,22 @@ func TestVideoReplaceFilterUsesPiecewiseOneFrameConcat(t *testing.T) {
 	}
 	if strings.Contains(graph, "enable=") || strings.Contains(graph, "overlay=") {
 		t.Fatalf("replace must be piecewise concat, not overlay enable: %s", graph)
+	}
+}
+
+func TestVideoTemporalEventFilterInjectsOneFrameFreeze(t *testing.T) {
+	freeze := []recipe.Event{{Frame: 2}}
+	graph := videoTemporalEventFilter("[speeded]", "[temporal]", freeze, nil, -1, 25, 1, 64, 64)
+	want := []string{
+		"[speeded]trim=start=0.000000000:end=0.080000000,setpts=PTS-STARTPTS[rseg0]",
+		"[speeded]trim=start=0.080000000:end=0.120000000,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop=1[rfreeze1]",
+		"[speeded]trim=start=0.120000000:end=1.000000000,setpts=PTS-STARTPTS[rseg1]",
+		"[rseg0][rfreeze1][rseg1]concat=n=3:v=1:a=0,fps=fps=25.00000000[temporal]",
+	}
+	for _, part := range want {
+		if !strings.Contains(graph, part) {
+			t.Fatalf("freeze graph missing %q:\n%s", part, graph)
+		}
 	}
 }
 
