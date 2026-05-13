@@ -79,6 +79,20 @@ func coordinateTemporalEvents(candidates []temporalCandidate) temporalCoordinati
 	}
 
 	result := temporalCoordinationResult{Stats: stats}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		a, b := candidates[i].event, candidates[j].event
+		if a.StartSec == b.StartSec {
+			if a.Hardness == b.Hardness {
+				if a.EffectType == b.EffectType {
+					return a.ID < b.ID
+				}
+				return a.EffectType < b.EffectType
+			}
+			return a.Hardness == HardnessHard
+		}
+		return a.StartSec < b.StartSec
+	})
+
 	acceptedCandidates := make([]temporalCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		conflict, ok := firstTemporalConflict(candidate.event, result.Accepted)

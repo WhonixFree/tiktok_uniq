@@ -204,6 +204,9 @@ func (r Runner) prepareReplaceDonors(ctx context.Context, job workerpool.Job, re
 		if bytes, err := cmd.CombinedOutput(); err != nil {
 			return nil, fmt.Errorf("replace donor frame extraction failed for event %d: %w: %s", i, err, strings.TrimSpace(string(bytes)))
 		}
+		if st, statErr := os.Stat(ev.DonorImagePath); statErr != nil || st.Size() == 0 {
+			return nil, fmt.Errorf("replace donor validation failed for event %d", i)
+		}
 		out = append(out, ev.DonorImagePath)
 	}
 	return out, nil
@@ -481,7 +484,7 @@ func videoTemporalEventFilter(inputLabel, outputLabel string, freezeEvents, repl
 			labels = append(labels, donorLabel)
 		} else {
 			freezeLabel := fmt.Sprintf("[rfreeze%d]", segIndex)
-			parts = append(parts, fmt.Sprintf("%strim=start=%.9f:end=%.9f,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop=1%s", inputLabel, start, end, freezeLabel))
+			parts = append(parts, fmt.Sprintf("%strim=start=%.9f:end=%.9f,setpts=PTS-STARTPTS%s", inputLabel, start, end, freezeLabel))
 			labels = append(labels, freezeLabel)
 			prev = end
 		}
