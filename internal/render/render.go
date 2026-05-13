@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"videobatch/internal/config"
@@ -75,7 +76,17 @@ func (r Runner) Render(ctx context.Context, cfg config.Config, job workerpool.Jo
 	} else {
 		args = append(args, "-n")
 	}
-	args = append(args, "-i", job.InputPath)
+	mainVideoInput := job.InputPath
+	if rec != nil {
+		pixelPrepared, err := r.applyPixelReplacementStage(ctx, cfg, job, probe, rec, ffmpegPath)
+		if err != nil {
+			return err
+		}
+		if pixelPrepared != "" {
+			mainVideoInput = pixelPrepared
+		}
+	}
+	args = append(args, "-i", mainVideoInput)
 	overlayInputIndex := -1
 	nextInputIndex := 1
 	if rec != nil && strings.TrimSpace(rec.StreamOverlay.Path) != "" {
@@ -113,6 +124,63 @@ func (r Runner) Render(ctx context.Context, cfg config.Config, job workerpool.Jo
 		return fmt.Errorf("ffmpeg render failed: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return r.ValidateOutput(ctx, job.OutputPath)
+}
+
+func (r Runner) applyPixelReplacementStage(ctx context.Context, cfg config.Config, job workerpool.Job, probe *ffprobe.ProbeData, rec *recipe.Recipe, ffmpegPath string) (string, error) {
+	if probe == nil || probe.Video == nil || rec == nil {
+		return "", nil
+	}
+	width := evenPositive(probe.Video.Width)
+	height := evenPositive(probe.Video.Height)
+	fps := probe.Video.Fps
+	if fps <= 0 {
+		fps = 30
+	}
+	area := pixelArea(rec.PixelReplacement, width, height)
+	workDir := filepath.Dir(job.OutputPath)
+	blurredRaw := filepath.Join(workDir, "pixel_blurred.rgb")
+	processedRaw := filepath.Join(workDir, "pixel_processed.rgb")
+	processedVideo := filepath.Join(workDir, "pixel_processed.mp4")
+
+	geometrySteps := []string{}
+	if cfg.CropEnabled {
+		crop := cropGeometry(width, height, cfg.CropMaxPercent)
+		geometrySteps = append(geometrySteps, fmt.Sprintf("crop=%d:%d:%d:%d", crop.w, crop.h, crop.x, crop.y))
+	}
+	geometrySteps = append(geometrySteps, fmt.Sprintf("scale=%d:%d", width, height), "setsar=1", colorFilter(cfg.ColorStrength), fmt.Sprintf("gblur=sigma=%.4f", math.Max(0, rec.PixelReplacement.BlurSigma)), "format=rgb24")
+	vf := strings.Join(geometrySteps, ",")
+	extractArgs := []string{"-hide_banner", "-loglevel", "error", "-y", "-i", job.InputPath, "-an", "-vf", vf, "-pix_fmt", "rgb24", "-f", "rawvideo", blurredRaw}
+	if out, err := exec.CommandContext(ctx, ffmpegPath, extractArgs...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("pixel stage blur extraction failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	script, err := pixelReplaceScriptPath()
+	if err != nil {
+		return "", err
+	}
+	seed := int(cfg.Seed)
+	pyArgs := []string{
+		script, "--input", blurredRaw, "--output", processedRaw, "--width", strconv.Itoa(width), "--height", strconv.Itoa(height),
+		"--percent", fmt.Sprintf("%.6f", rec.PixelReplacement.Percent), "--area-x", strconv.Itoa(area.x), "--area-y", strconv.Itoa(area.y),
+		"--area-w", strconv.Itoa(area.w), "--area-h", strconv.Itoa(area.h), "--neighbor-offset", strconv.Itoa(rec.PixelReplacement.NeighborOffset), "--seed", strconv.Itoa(seed),
+	}
+	if out, err := exec.CommandContext(ctx, "python3", pyArgs...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("pixel stage python processing failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	encodeArgs := []string{"-hide_banner", "-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", fmt.Sprintf("%dx%d", width, height), "-r", fmt.Sprintf("%.8f", fps), "-i", processedRaw, "-an"}
+	encodeArgs = append(encodeArgs, codecArgs(cfg.CodecProfile)...)
+	encodeArgs = append(encodeArgs, "-pix_fmt", "yuv420p", processedVideo)
+	if out, err := exec.CommandContext(ctx, ffmpegPath, encodeArgs...).CombinedOutput(); err != nil {
+		return "", fmt.Errorf("pixel stage re-encode failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return processedVideo, nil
+}
+
+func pixelReplaceScriptPath() (string, error) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", errors.New("cannot locate pixel replacement script")
+	}
+	return filepath.Join(filepath.Dir(file), "..", "..", "python", "pixel_replace.py"), nil
 }
 
 func (r Runner) prepareReplaceDonors(ctx context.Context, job workerpool.Job, rec *recipe.Recipe) ([]string, error) {
@@ -260,26 +328,11 @@ func BuildPipelineWithDonors(cfg config.Config, probe *ffprobe.ProbeData, rec *r
 
 	width := evenPositive(probe.Video.Width)
 	height := evenPositive(probe.Video.Height)
-	area := pixelArea(rec.PixelReplacement, width, height)
-	neighborX := clamp(area.x+rec.PixelReplacement.NeighborOffset, 0, width-area.w)
-	neighborY := area.y
-	if neighborX == area.x && area.x > 0 {
-		neighborX = area.x - 1
-	}
-	replaceAlpha := clampFloat(rec.PixelReplacement.Percent/100, 0.0001, 1)
-	blurSigma := math.Max(0, rec.PixelReplacement.BlurSigma)
 	overlayOpacity := clampFloat(cfg.StreamOverlayOpacity, 0, 1)
 
-	geometryInput := "[0:v]"
-	geometrySteps := []string{}
-	if cfg.CropEnabled {
-		crop := cropGeometry(width, height, cfg.CropMaxPercent)
-		geometrySteps = append(geometrySteps, fmt.Sprintf("crop=%d:%d:%d:%d", crop.w, crop.h, crop.x, crop.y))
-	}
-	geometrySteps = append(geometrySteps, "scale=trunc(iw/2)*2:trunc(ih/2)*2", "setsar=1", colorFilter(cfg.ColorStrength), "format=rgba")
-	geometryColor := fmt.Sprintf("%s%s[gcolor]", geometryInput, strings.Join(geometrySteps, ","))
-	blur := fmt.Sprintf("[gcolor]gblur=sigma=%.4f[blurred]", blurSigma)
-	pixel := fmt.Sprintf("[blurred]split=2[pixelbase][pixelsrc];[pixelsrc]crop=%d:%d:%d:%d,format=rgba,colorchannelmixer=aa=%.6f[pixelpatch];[pixelbase][pixelpatch]overlay=%d:%d[pixel]", area.w, area.h, neighborX, neighborY, replaceAlpha, area.x, area.y)
+	geometryColor := "[0:v]format=rgba[gcolor]"
+	blur := "[gcolor]null[blurred]"
+	pixel := "[blurred]null[pixel]"
 	segments := BuildVideoSpeedPlan(probe.Duration, rec.VideoSpeed)
 	speedTemporal, plannedDuration := videoTemporalFilter("[pixel]", "[speeded]", segments)
 	replaceTemporal := videoTemporalEventFilter("[speeded]", "[temporal]", rec.FreezeEvents, rec.ReplaceEvents, firstDonorInputIndex, probe.Video.Fps, plannedDuration, width, height)

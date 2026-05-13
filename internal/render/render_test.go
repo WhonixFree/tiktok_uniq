@@ -67,7 +67,7 @@ func TestBuildPipelineFilterGraphKeepsEffectOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPipeline failed: %v", err)
 	}
-	markers := []string{"scale=", "eq=", "gblur=", "crop=", "[pixel]trim=", "[temporal]format=rgba[vout]"}
+	markers := []string{"[0:v]format=rgba[gcolor]", "[gcolor]null[blurred]", "[blurred]null[pixel]", "[pixel]trim=", "[temporal]format=rgba[vout]"}
 	last := -1
 	for _, marker := range markers {
 		idx := strings.Index(pipeline.FilterGraph, marker)
@@ -81,6 +81,22 @@ func TestBuildPipelineFilterGraphKeepsEffectOrder(t *testing.T) {
 	}
 	if got := strings.Join(pipeline.AudioFilters, ","); strings.Contains(got, "atempo=") {
 		t.Fatalf("audio temporal filter must not use atempo, got %q", got)
+	}
+}
+
+func TestBuildPipelineUsesExternalPixelStagePlaceholder(t *testing.T) {
+	pipeline, err := BuildPipeline(testConfig(), testProbe(true), testRecipe())
+	if err != nil {
+		t.Fatalf("BuildPipeline failed: %v", err)
+	}
+	want := []string{"[gcolor]null[blurred]", "[blurred]null[pixel]"}
+	for _, part := range want {
+		if !strings.Contains(pipeline.FilterGraph, part) {
+			t.Fatalf("pixel replacement graph missing %q:\n%s", part, pipeline.FilterGraph)
+		}
+	}
+	if strings.Contains(pipeline.FilterGraph, "geq=") || strings.Contains(pipeline.FilterGraph, "colorchannelmixer=aa=") {
+		t.Fatalf("pixel replacement must run in external python stage, got: %s", pipeline.FilterGraph)
 	}
 }
 
@@ -152,18 +168,7 @@ func TestBuildPipelineExposesPlannedVideoDuration(t *testing.T) {
 	}
 }
 
-func TestBuildPipelineUsesPercentDividedByHundredForCrop(t *testing.T) {
-	cfg := testConfig()
-	cfg.CropEnabled = true
-	cfg.CropMaxPercent = 2
-
-	pipeline, err := BuildPipeline(cfg, testProbe(true), testRecipe())
-	if err != nil {
-		t.Fatalf("BuildPipeline failed: %v", err)
-	}
-	if !strings.Contains(pipeline.FilterGraph, "crop=62:62:1:1") {
-		t.Fatalf("expected 2%% crop to keep 98%% of 64x64 frame, got: %s", pipeline.FilterGraph)
-	}
+func TestCropRatioUsesPercentDividedByHundred(t *testing.T) {
 	if got := cropRatio(2); got != 0.02 {
 		t.Fatalf("cropRatio(2) = %v, want 0.02", got)
 	}
