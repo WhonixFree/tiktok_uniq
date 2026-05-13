@@ -68,11 +68,6 @@ func (r Runner) Render(ctx context.Context, cfg config.Config, job workerpool.Jo
 	if err != nil {
 		return err
 	}
-	pipeline, err := BuildPipelineWithDonors(cfg, probe, rec, 1)
-	if err != nil {
-		return err
-	}
-
 	args := []string{"-hide_banner", "-loglevel", "error"}
 	if cfg.Overwrite {
 		args = append(args, "-y")
@@ -80,9 +75,21 @@ func (r Runner) Render(ctx context.Context, cfg config.Config, job workerpool.Jo
 		args = append(args, "-n")
 	}
 	args = append(args, "-i", job.InputPath)
+	overlayInputIndex := -1
+	nextInputIndex := 1
+	if rec != nil && strings.TrimSpace(rec.StreamOverlay.Path) != "" {
+		args = append(args, "-i", rec.StreamOverlay.Path)
+		overlayInputIndex = nextInputIndex
+		nextInputIndex++
+	}
+	donorInputStartIndex := nextInputIndex
 	frameDuration := 1 / probe.Video.Fps
 	for _, donorInput := range donorInputs {
 		args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.9f", frameDuration), "-i", donorInput)
+	}
+	pipeline, err := BuildPipelineWithDonors(cfg, probe, rec, donorInputStartIndex, overlayInputIndex)
+	if err != nil {
+		return err
 	}
 	if probe.Audio != nil {
 		processedAudio, err := r.processAudioSpeed(ctx, job, probe, rec, pipeline.PlannedVideoDuration)
@@ -93,7 +100,7 @@ func (r Runner) Render(ctx context.Context, cfg config.Config, job workerpool.Jo
 	}
 	args = append(args, "-filter_complex", pipeline.FilterGraph, "-map", pipeline.VideoLabel)
 	if probe.Audio != nil {
-		audioInputIndex := 1 + len(donorInputs)
+		audioInputIndex := donorInputStartIndex + len(donorInputs)
 		args = append(args, "-map", fmt.Sprintf("%d:a:0", audioInputIndex))
 		args = append(args, "-c:a", "aac", "-b:a", "128k")
 	}
@@ -239,10 +246,10 @@ func (r Runner) ValidateOutput(ctx context.Context, outputPath string) error {
 }
 
 func BuildPipeline(cfg config.Config, probe *ffprobe.ProbeData, rec *recipe.Recipe) (Pipeline, error) {
-	return BuildPipelineWithDonors(cfg, probe, rec, -1)
+	return BuildPipelineWithDonors(cfg, probe, rec, -1, -1)
 }
 
-func BuildPipelineWithDonors(cfg config.Config, probe *ffprobe.ProbeData, rec *recipe.Recipe, firstDonorInputIndex int) (Pipeline, error) {
+func BuildPipelineWithDonors(cfg config.Config, probe *ffprobe.ProbeData, rec *recipe.Recipe, firstDonorInputIndex, overlayInputIndex int) (Pipeline, error) {
 	if probe == nil || probe.Video == nil {
 		return Pipeline{}, errors.New("video probe data is required")
 	}
@@ -275,7 +282,10 @@ func BuildPipelineWithDonors(cfg config.Config, probe *ffprobe.ProbeData, rec *r
 	segments := BuildVideoSpeedPlan(probe.Duration, rec.VideoSpeed)
 	speedTemporal, plannedDuration := videoTemporalFilter("[pixel]", "[speeded]", segments)
 	replaceTemporal := videoReplaceFilter("[speeded]", "[temporal]", rec.ReplaceEvents, firstDonorInputIndex, probe.Video.Fps, plannedDuration, width, height)
-	overlay := fmt.Sprintf("color=c=white@%.6f:s=%dx%d:r=30,format=rgba[streamoverlay];[temporal][streamoverlay]overlay=0:0:shortest=1[vout]", overlayOpacity, width, height)
+	overlay := fmt.Sprintf("[temporal]format=rgba[vout]")
+	if overlayInputIndex >= 0 {
+		overlay = fmt.Sprintf("[%d:v]scale=%d:%d,setsar=1,fps=fps=%.8f,format=rgba,colorchannelmixer=aa=%.6f[streamoverlay];[temporal][streamoverlay]overlay=0:0:shortest=1[vout]", overlayInputIndex, width, height, probe.Video.Fps, overlayOpacity)
+	}
 
 	return Pipeline{
 		Stages:               append([]Stage(nil), RecommendedOrder...),
