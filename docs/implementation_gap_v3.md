@@ -27,7 +27,7 @@ This document records the current implementation status against `PROJECT_SPEC_FO
 | 3.1.8 Video speed: base offset + sine modulation | done | Go builds piecewise speed segments from base + sine (+micro events), and FFmpeg renders via `trim` + `setpts` + `concat`. | Maintain deterministic plan coverage and bounds checks. |
 | 3.1.9 Freeze events, exactly 1 frame | done | Recipe planner generates 1-frame freeze events and runtime applies them as one-frame temporal insertions using piecewise trim/concat with a cloned frame segment (`tpad=stop_mode=clone:stop=1`). | Keep frame-exact tests and concat timeline assertions. |
 | 3.1.10 Replace events, exactly 1 frame + unique donors | done | Recipe planner selects donor stream from recursive `--stream-overlay-dir` assets distinct from overlay/main, assigns unique valid donor frames and tmp PNG paths, render extracts one PNG per event, and temporal stage applies one-frame piecewise replacements before overlay. | Maintain focused planner/render determinism coverage. |
-| 3.1.11 Pixel replacement neighbor-duplication | partial | Render applies weak blur followed by area-limited patch/overlay approximation rather than sparse per-pixel neighbor-duplication at per-frame randomized percent. | Replace approximation with deterministic sparse neighbor-duplication mask honoring recipe percent bounds. |
+| 3.1.11 Pixel replacement neighbor-duplication | done | Render applies weak blur and then area-limited sparse neighbor-duplication per frame using deterministic per-pixel selection and neighbor sampling in filtergraph (`geq`), honoring recipe percent/area/offset parameters. | Keep focused filtergraph tests for sparse replacement semantics. |
 | 4. Startup check behavior on missing dependencies | done | Missing required tools produce clear errors with install hints and stop startup before scanning/processing. | No change required. |
 | 5. Input formats `.mp4`, `.mov`, `.mkv`; `.webm` optional | done | Scanner supports required formats and keeps optional `.webm`. | No change required unless project scope later narrows formats. |
 | 5. Output naming `*_processed.mp4` | done | Job output paths are built as `<basename>_processed.mp4`. | No change required. |
@@ -51,6 +51,4 @@ This document records the current implementation status against `PROJECT_SPEC_FO
 
 ## Critical gaps summary
 
-1. `partial`: pixel replacement is approximate, not true sparse per-pixel neighbor duplication per frame.
-
-This gap blocks a strict full PASS against v3 mandatory features and should be prioritized before non-critical refinements.
+No critical v3 mandatory gaps were identified in this audit run.
