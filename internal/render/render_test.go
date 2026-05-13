@@ -67,7 +67,7 @@ func TestBuildPipelineFilterGraphKeepsEffectOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPipeline failed: %v", err)
 	}
-	markers := []string{"scale=", "eq=", "gblur=", "crop=", "[pixel]trim=", "color=c=white", "[temporal][streamoverlay]overlay=0:0"}
+	markers := []string{"scale=", "eq=", "gblur=", "crop=", "[pixel]trim=", "[temporal]format=rgba[vout]"}
 	last := -1
 	for _, marker := range markers {
 		idx := strings.Index(pipeline.FilterGraph, marker)
@@ -81,6 +81,25 @@ func TestBuildPipelineFilterGraphKeepsEffectOrder(t *testing.T) {
 	}
 	if got := strings.Join(pipeline.AudioFilters, ","); strings.Contains(got, "atempo=") {
 		t.Fatalf("audio temporal filter must not use atempo, got %q", got)
+	}
+}
+
+func TestBuildPipelineWithOverlayInputUsesOverlayStream(t *testing.T) {
+	pipeline, err := BuildPipelineWithDonors(testConfig(), testProbe(true), testRecipe(), -1, 1)
+	if err != nil {
+		t.Fatalf("BuildPipelineWithDonors failed: %v", err)
+	}
+	want := []string{
+		"[1:v]scale=64:64,setsar=1,fps=fps=25.00000000,format=rgba,colorchannelmixer=aa=0.020000[streamoverlay]",
+		"[temporal][streamoverlay]overlay=0:0:shortest=1[vout]",
+	}
+	for _, part := range want {
+		if !strings.Contains(pipeline.FilterGraph, part) {
+			t.Fatalf("overlay graph missing %q:\n%s", part, pipeline.FilterGraph)
+		}
+	}
+	if strings.Contains(pipeline.FilterGraph, "color=c=white") || strings.Contains(pipeline.FilterGraph, "nullsrc") || strings.Contains(pipeline.FilterGraph, "testsrc") || strings.Contains(pipeline.FilterGraph, "noise") {
+		t.Fatalf("synthetic overlay source must not be used: %s", pipeline.FilterGraph)
 	}
 }
 
