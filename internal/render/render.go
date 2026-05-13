@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 
 	"videobatch/internal/config"
@@ -281,7 +282,7 @@ func BuildPipelineWithDonors(cfg config.Config, probe *ffprobe.ProbeData, rec *r
 	pixel := fmt.Sprintf("[blurred]split=2[pixelbase][pixelsrc];[pixelsrc]crop=%d:%d:%d:%d,format=rgba,colorchannelmixer=aa=%.6f[pixelpatch];[pixelbase][pixelpatch]overlay=%d:%d[pixel]", area.w, area.h, neighborX, neighborY, replaceAlpha, area.x, area.y)
 	segments := BuildVideoSpeedPlan(probe.Duration, rec.VideoSpeed)
 	speedTemporal, plannedDuration := videoTemporalFilter("[pixel]", "[speeded]", segments)
-	replaceTemporal := videoReplaceFilter("[speeded]", "[temporal]", rec.ReplaceEvents, firstDonorInputIndex, probe.Video.Fps, plannedDuration, width, height)
+	replaceTemporal := videoTemporalEventFilter("[speeded]", "[temporal]", rec.FreezeEvents, rec.ReplaceEvents, firstDonorInputIndex, probe.Video.Fps, plannedDuration, width, height)
 	overlay := fmt.Sprintf("[temporal]format=rgba[vout]")
 	if overlayInputIndex >= 0 {
 		overlay = fmt.Sprintf("[%d:v]scale=%d:%d,setsar=1,fps=fps=%.8f,format=rgba,colorchannelmixer=aa=%.6f[streamoverlay];[temporal][streamoverlay]overlay=0:0:shortest=1[vout]", overlayInputIndex, width, height, probe.Video.Fps, overlayOpacity)
@@ -379,20 +380,38 @@ func videoTemporalFilter(inputLabel, outputLabel string, segments []SpeedSegment
 	return strings.Join(parts, ";"), planned
 }
 
-func videoReplaceFilter(inputLabel, outputLabel string, events []recipe.Event, firstDonorInputIndex int, fps, duration float64, width, height int) string {
+type temporalVideoEvent struct {
+	frame      int64
+	donorIndex int
+}
+
+func videoTemporalEventFilter(inputLabel, outputLabel string, freezeEvents, replaceEvents []recipe.Event, firstDonorInputIndex int, fps, duration float64, width, height int) string {
 	if fps <= 0 {
 		fps = 30
 	}
-	if len(events) == 0 || firstDonorInputIndex < 0 {
+	events := make([]temporalVideoEvent, 0, len(freezeEvents)+len(replaceEvents))
+	for _, ev := range freezeEvents {
+		events = append(events, temporalVideoEvent{frame: ev.Frame, donorIndex: -1})
+	}
+	for i, ev := range replaceEvents {
+		events = append(events, temporalVideoEvent{frame: ev.Frame, donorIndex: i})
+	}
+	if len(events) == 0 {
 		return fmt.Sprintf("%sfps=fps=%.8f%s", inputLabel, fps, outputLabel)
 	}
+	sort.SliceStable(events, func(i, j int) bool {
+		if events[i].frame == events[j].frame {
+			return events[i].donorIndex > events[j].donorIndex
+		}
+		return events[i].frame < events[j].frame
+	})
 	frameDuration := 1 / fps
 	parts := make([]string, 0, len(events)*2+2)
 	labels := make([]string, 0, len(events)*2+1)
 	prev := 0.0
 	segIndex := 0
-	for i, ev := range events {
-		start := float64(ev.Frame) * frameDuration
+	for _, ev := range events {
+		start := float64(ev.frame) * frameDuration
 		end := start + frameDuration
 		if start < prev || start >= duration {
 			continue
@@ -403,9 +422,16 @@ func videoReplaceFilter(inputLabel, outputLabel string, events []recipe.Event, f
 			labels = append(labels, label)
 			segIndex++
 		}
-		donorLabel := fmt.Sprintf("[rdonor%d]", i)
-		parts = append(parts, fmt.Sprintf("[%d:v]scale=%d:%d,setsar=1,format=rgba,fps=fps=%.8f,trim=duration=%.9f,setpts=PTS-STARTPTS%s", firstDonorInputIndex+i, width, height, fps, frameDuration, donorLabel))
-		labels = append(labels, donorLabel)
+		if ev.donorIndex >= 0 && firstDonorInputIndex >= 0 {
+			donorLabel := fmt.Sprintf("[rdonor%d]", ev.donorIndex)
+			parts = append(parts, fmt.Sprintf("[%d:v]scale=%d:%d,setsar=1,format=rgba,fps=fps=%.8f,trim=duration=%.9f,setpts=PTS-STARTPTS%s", firstDonorInputIndex+ev.donorIndex, width, height, fps, frameDuration, donorLabel))
+			labels = append(labels, donorLabel)
+		} else {
+			freezeLabel := fmt.Sprintf("[rfreeze%d]", segIndex)
+			parts = append(parts, fmt.Sprintf("%strim=start=%.9f:end=%.9f,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop=1%s", inputLabel, start, end, freezeLabel))
+			labels = append(labels, freezeLabel)
+			prev = end
+		}
 		prev = end
 	}
 	if prev < duration {
