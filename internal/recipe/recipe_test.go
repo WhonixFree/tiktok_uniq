@@ -402,3 +402,90 @@ func TestGenerateRecipeStructureExpandedAndDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestFreezeAndReplaceEventsAreRegisteredFrameExactInTemporalLog(t *testing.T) {
+	cfg := baseCfg()
+	cfg.FreezeCount = config.EventCountRange{Min: 3, Max: 3}
+	cfg.ReplaceCount = config.EventCountRange{Min: 3, Max: 3}
+	installReplacePlannerStubs(t, cfg.InputDir, 90)
+	probe := &ffprobe.ProbeData{Duration: 8, Video: &ffprobe.VideoStream{Fps: 30}}
+
+	rec, err := Generate(cfg, probe)
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+
+	freezeByFrame := map[int64]bool{}
+	for _, ev := range rec.FreezeEvents {
+		freezeByFrame[ev.Frame] = false
+	}
+	replaceByFrame := map[int64]bool{}
+	for _, ev := range rec.ReplaceEvents {
+		replaceByFrame[ev.Frame] = false
+	}
+
+	for _, tev := range rec.TemporalEvents {
+		if tev.EffectType == EffectVideoFreeze {
+			if _, ok := freezeByFrame[tev.Frame]; ok {
+				freezeByFrame[tev.Frame] = true
+			}
+		}
+		if tev.EffectType == EffectVideoReplace {
+			if _, ok := replaceByFrame[tev.Frame]; ok {
+				replaceByFrame[tev.Frame] = true
+			}
+		}
+	}
+	for frame, seen := range freezeByFrame {
+		if !seen {
+			t.Fatalf("freeze frame %d is missing from temporal events", frame)
+		}
+	}
+	for frame, seen := range replaceByFrame {
+		if !seen {
+			t.Fatalf("replace frame %d is missing from temporal events", frame)
+		}
+	}
+
+	frameDuration := 1.0 / probe.Video.Fps
+	minDistFrames := int64(cfg.MinEventDistanceSec * probe.Video.Fps)
+	for _, fr := range rec.FreezeEvents {
+		for _, rep := range rec.ReplaceEvents {
+			if abs64(fr.Frame-rep.Frame) < minDistFrames {
+				t.Fatalf("freeze/replace conflict at frames freeze=%d replace=%d min=%d", fr.Frame, rep.Frame, minDistFrames)
+			}
+			freezeStart := float64(fr.Frame) * frameDuration
+			replaceStart := float64(rep.Frame) * frameDuration
+			if math.Abs((replaceStart-freezeStart)-float64(rep.Frame-fr.Frame)*frameDuration) > 1e-6 {
+				t.Fatalf("frame-to-seconds mapping drifted for freeze=%d replace=%d", fr.Frame, rep.Frame)
+			}
+		}
+	}
+}
+
+func TestReplaceEventsRecordDonorMetadataAndEffectiveCounts(t *testing.T) {
+	cfg := baseCfg()
+	cfg.ReplaceCount = config.EventCountRange{Min: 4, Max: 4}
+	cfg.TmpDir = filepath.Join(t.TempDir(), "tmp")
+	installReplacePlannerStubs(t, cfg.InputDir, 50)
+	probe := &ffprobe.ProbeData{Duration: 10, Video: &ffprobe.VideoStream{Fps: 25}}
+
+	rec, err := Generate(cfg, probe)
+	if err != nil {
+		t.Fatalf("Generate failed: %v", err)
+	}
+	if rec.ReplaceRequested != 4 {
+		t.Fatalf("replace requested mismatch: got %d want 4", rec.ReplaceRequested)
+	}
+	if rec.ReplaceEffective != len(rec.ReplaceEvents) {
+		t.Fatalf("replace effective mismatch: effective=%d events=%d", rec.ReplaceEffective, len(rec.ReplaceEvents))
+	}
+	for i, ev := range rec.ReplaceEvents {
+		if ev.DonorPath == "" || ev.DonorImagePath == "" {
+			t.Fatalf("replace event %d missing donor metadata: %+v", i, ev)
+		}
+		if ev.DonorFrame < 0 {
+			t.Fatalf("replace event %d has negative donor frame: %+v", i, ev)
+		}
+	}
+}
