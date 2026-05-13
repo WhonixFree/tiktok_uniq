@@ -239,7 +239,7 @@ func TestVideoTemporalEventFilterInjectsOneFrameFreeze(t *testing.T) {
 	graph := videoTemporalEventFilter("[speeded]", "[temporal]", freeze, nil, -1, 25, 1, 64, 64)
 	want := []string{
 		"[speeded]trim=start=0.000000000:end=0.080000000,setpts=PTS-STARTPTS[rseg0]",
-		"[speeded]trim=start=0.080000000:end=0.120000000,setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop=1[rfreeze1]",
+		"[speeded]trim=start=0.080000000:end=0.120000000,setpts=PTS-STARTPTS[rfreeze1]",
 		"[speeded]trim=start=0.120000000:end=1.000000000,setpts=PTS-STARTPTS[rseg1]",
 		"[rseg0][rfreeze1][rseg1]concat=n=3:v=1:a=0,fps=fps=25.00000000[temporal]",
 	}

@@ -14,6 +14,7 @@ from array import array
 
 MIN_SPEED = 0.95
 MAX_SPEED = 1.05
+SHORT_CLIP_SEC = 1.0
 
 
 def clamp(value, lo, hi):
@@ -87,21 +88,30 @@ def warp(samples, params, cfg, target_duration):
     return out
 
 
-def apply_freezes(samples, params, freeze_events):
+def apply_freezes(samples, params, freeze_events, clip_duration=None):
+    runtime = {"requested": len(freeze_events or []), "applied": 0, "skipped": 0, "events": []}
     if not freeze_events:
-        return samples
+        return samples, runtime
+    if clip_duration is not None and clip_duration < SHORT_CLIP_SEC:
+        runtime["skipped"] = len(freeze_events)
+        for i, _ in enumerate(freeze_events):
+            runtime["events"].append({"index": i, "status": "skipped", "reason": "short_clip_guard"})
+        return samples, runtime
     channels = params.nchannels
     sample_rate = params.framerate
     out = array("h", samples)
-    offset_frames = 0
-    for ev in sorted(freeze_events, key=lambda item: float(item.get("StartSec", 0.0))):
-        start = int(round(float(ev.get("StartSec", 0.0)) * sample_rate)) + offset_frames
+    for index, ev in enumerate(sorted(freeze_events, key=lambda item: float(item.get("StartSec", 0.0)))):
+        start = int(round(float(ev.get("StartSec", 0.0)) * sample_rate))
         length = int(round(float(ev.get("DurationSec", 0.0)) * sample_rate))
         repeats = int(ev.get("Repeats", 2))
         if length <= 0 or repeats < 2:
+            runtime["skipped"] += 1
+            runtime["events"].append({"index": index, "status": "skipped", "reason": "invalid_freeze_params"})
             continue
         frame_count = len(out) // channels
         if start < 0 or start + length >= frame_count:
+            runtime["skipped"] += 1
+            runtime["events"].append({"index": index, "status": "skipped", "reason": "out_of_bounds"})
             continue
         start_i = start * channels
         end_i = (start + length) * channels
@@ -122,8 +132,10 @@ def apply_freezes(samples, params, freeze_events):
                 after_idx = min(len(out) - channels + ch, end_i + (fade_frames - i - 1) * channels + ch)
                 insert[tail_idx] = int(round(out[after_idx] * gain_out + insert[tail_idx] * gain_in))
         out[start_i:start_i] = insert
-        offset_frames += len(insert) // channels
-    return out
+        runtime["applied"] += 1
+        runtime["events"].append({"index": index, "status": "applied"})
+    runtime["skipped"] = runtime["requested"] - runtime["applied"]
+    return out, runtime
 
 
 def fit_duration(samples, params, target_duration):
@@ -156,8 +168,13 @@ def main():
     audio_cfg = recipe.get("AudioSpeed", {}) or {}
     params, samples = read_wav(args.input)
     warped = warp(samples, params, audio_cfg, args.target_duration)
-    frozen = apply_freezes(warped, params, audio_cfg.get("FreezeEvents", []) or [])
+    frozen, freeze_runtime = apply_freezes(warped, params, audio_cfg.get("FreezeEvents", []) or [], args.target_duration)
     fitted = fit_duration(frozen, params, args.target_duration)
+    runtime_log = recipe.setdefault("RuntimeTemporalLog", {})
+    runtime_log["AudioFreeze"] = freeze_runtime
+    runtime_log["AudioMicro"] = {"requested": len(audio_cfg.get("MicroEvents", []) or []), "applied": len(audio_cfg.get("MicroEvents", []) or []), "skipped": 0}
+    with open(args.recipe, "w", encoding="utf-8") as fh:
+        json.dump(recipe, fh, ensure_ascii=False)
     write_wav(args.output, params, fitted)
 
 

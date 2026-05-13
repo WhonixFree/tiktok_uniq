@@ -34,10 +34,15 @@ type SpeedConfig struct {
 	FreezeEvents []AudioFreezeEvent
 }
 type Event struct {
-	Frame          int64
-	DonorFrame     int64
-	DonorPath      string
-	DonorImagePath string
+	ID                string
+	Kind              string
+	Frame             int64
+	DonorFrame        int64
+	DonorPath         string
+	DonorImagePath    string
+	Applied           bool
+	DegradationReason string
+	EffectiveFrames   int
 }
 
 type StreamOverlay struct {
@@ -47,6 +52,7 @@ type StreamOverlay struct {
 type PixelReplacement struct {
 	BlurSigma           float64
 	Percent             float64
+	PercentUnits        string
 	RequestedMode       string
 	Mode                string
 	AreaInsetPercent    float64
@@ -90,6 +96,7 @@ type Recipe struct {
 	TemporalEvents         []TemporalEvent
 	TemporalDroppedEvents  []TemporalDrop
 	TemporalStats          map[TemporalEffectType]TemporalEffectStats
+	RuntimeTemporalLog     map[string]any
 	PixelReplacement       PixelReplacement
 	Metadata               Metadata
 }
@@ -106,7 +113,7 @@ func GenerateWithSmartAnalyzer(ctx context.Context, cfg config.Config, probe *ff
 		return nil, errors.New("recipe config is nil")
 	}
 	rng := rand.New(rand.NewSource(cfg.Seed))
-	rec := &Recipe{InputPath: cfg.InputDir, OutputPath: cfg.OutputDir, AVSineMode: cfg.AVSineMode, MinEventDistanceSec: cfg.MinEventDistanceSec, Metadata: metadataFull(rng, cfg.MetadataFullMode)}
+	rec := &Recipe{InputPath: cfg.InputDir, OutputPath: cfg.OutputDir, AVSineMode: cfg.AVSineMode, MinEventDistanceSec: cfg.MinEventDistanceSec, Metadata: metadataFull(rng, cfg.MetadataFullMode), RuntimeTemporalLog: map[string]any{}}
 
 	audioSine := randSine(rng, cfg.AudioSine)
 	videoSine := randSine(rng, cfg.VideoSine)
@@ -122,7 +129,16 @@ func GenerateWithSmartAnalyzer(ctx context.Context, cfg config.Config, probe *ff
 
 	totalFrames := int64(math.Max(1, probe.Duration*probe.Video.Fps))
 	minDistFrames := int64(cfg.MinEventDistanceSec * probe.Video.Fps)
-	freezeCandidates := buildEvents(rng, totalFrames, cfg.FreezeCount.Min, cfg.FreezeCount.Max, minDistFrames, nil)
+	freezeMin, freezeMax := cfg.FreezeCount.Min, cfg.FreezeCount.Max
+	if probe.Duration < 1.0 {
+		freezeMin, freezeMax = 0, 0
+	}
+	freezeCandidates := buildEvents(rng, totalFrames, freezeMin, freezeMax, minDistFrames, nil)
+	for i := range freezeCandidates {
+		freezeCandidates[i].Kind = "freeze_1f"
+		freezeCandidates[i].ID = fmt.Sprintf("freeze_%03d", i)
+		freezeCandidates[i].EffectiveFrames = 1
+	}
 	replaceCandidates := planReplaceCandidateEvents(ctx, rng, cfg, rec, totalFrames, minDistFrames)
 
 	coordination := coordinateTemporalEvents(buildTemporalCandidates(cfg.Seed, probe.Video.Fps, cfg.MinEventDistanceSec, audioMicroCandidates, audioFreezeCandidates, videoMicroCandidates, freezeCandidates, replaceCandidates))
@@ -141,6 +157,7 @@ func GenerateWithSmartAnalyzer(ctx context.Context, cfg config.Config, probe *ff
 	rec.PixelReplacement = PixelReplacement{
 		BlurSigma:        randPercent(rng, cfg.PixelBlurSigma.Min, cfg.PixelBlurSigma.Max),
 		Percent:          randPercent(rng, cfg.PixelReplacePercent.Min, cfg.PixelReplacePercent.Max),
+		PercentUnits:     "percent_0_100",
 		RequestedMode:    cfg.PixelReplaceMode,
 		Mode:             cfg.PixelReplaceMode,
 		AreaInsetPercent: randPercent(rng, cfg.PixelAreaEdgeInset.Min, cfg.PixelAreaEdgeInset.Max),
@@ -190,6 +207,11 @@ func planReplaceCandidateEvents(ctx context.Context, rng *rand.Rand, cfg config.
 		rec.ReplaceDisabledReason = "no valid replace target frames after spacing constraints"
 		rec.ReplaceEffective = 0
 		return nil
+	}
+	for i := range replace {
+		replace[i].Kind = "replace_1f"
+		replace[i].ID = fmt.Sprintf("replace_%03d", i)
+		replace[i].EffectiveFrames = 1
 	}
 	assignDonorFrames(rng, replace, donorPath, donorFrames, cfg.TmpDir)
 	return replace

@@ -36,8 +36,9 @@ class AudioSpeedRegressionTests(unittest.TestCase):
                 "FreezeEvents": [{"StartSec": 0.7, "DurationSec": 0.03, "Repeats": 3}],
             }
             warped = audio_speed.warp(src, params, cfg, target_duration)
-            frozen = audio_speed.apply_freezes(warped, params, cfg["FreezeEvents"])
+            frozen, runtime = audio_speed.apply_freezes(warped, params, cfg["FreezeEvents"], target_duration)
             fitted = audio_speed.fit_duration(frozen, params, target_duration)
+            self.assertEqual(runtime["applied"], 1)
             audio_speed.write_wav(str(out), params, fitted)
 
             out_params, out_samples = audio_speed.read_wav(str(out))
@@ -49,7 +50,8 @@ class AudioSpeedRegressionTests(unittest.TestCase):
             inp = Path(td) / "in.wav"
             params, src = self._sine_wav(inp, seconds=1.0)
             freeze_events = [{"StartSec": 0.4, "DurationSec": 0.2, "Repeats": 3}]
-            out = audio_speed.apply_freezes(src, params, freeze_events)
+            out, runtime = audio_speed.apply_freezes(src, params, freeze_events, 1.0)
+            self.assertEqual(runtime["applied"], 1)
             self.assertTrue(all(-32768 <= s <= 32767 for s in out))
 
             # Regression guard: crossfade window must stay at least 50ms.
@@ -74,3 +76,13 @@ class AudioSpeedRegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AudioSpeedShortClipPolicyTests(unittest.TestCase):
+    def test_short_clip_skips_freezes(self):
+        params = wave._wave_params(1, 2, 48000, 4800, "NONE", "not compressed")
+        src = array("h", [0]*4800)
+        out, runtime = audio_speed.apply_freezes(src, params, [{"StartSec":0.01,"DurationSec":0.02,"Repeats":3}], 0.1)
+        self.assertEqual(len(out), len(src))
+        self.assertEqual(runtime["applied"], 0)
+        self.assertEqual(runtime["events"][0]["reason"], "short_clip_guard")

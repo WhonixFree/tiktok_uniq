@@ -28,6 +28,8 @@ def main():
     a = parse_args()
     frame_size = a.width * a.height * 3
     percent = max(0.0, min(100.0, a.percent))
+    if a.width <= 0 or a.height <= 0:
+        raise ValueError("invalid frame geometry")
     n_off = a.neighbor_offset or 1
 
     ax = max(0, min(a.width - 1, a.area_x))
@@ -59,9 +61,14 @@ def main():
                         (x + n_off, y + n_off), (x + n_off, y - n_off),
                         (x - n_off, y + n_off), (x - n_off, y - n_off),
                     ]
-                    nx, ny = choices[rng.randrange(len(choices))]
-                    nx = max(0, min(aw - 1, nx))
-                    ny = max(0, min(ah - 1, ny))
+                    nx, ny = x, y
+                    for _ in range(8):
+                        cx, cy = choices[rng.randrange(len(choices))]
+                        cx = max(0, min(aw - 1, cx))
+                        cy = max(0, min(ah - 1, cy))
+                        if cx != x or cy != y:
+                            nx, ny = cx, cy
+                            break
                     gx, gy = ax + x, ay + y
                     gnx, gny = ax + nx, ay + ny
                     dst = idx(gx, gy, a.width)

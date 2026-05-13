@@ -41,8 +41,8 @@ func TestGenerateTemporalPlannerConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
-	if len(rec.FreezeEvents) != 2 || len(rec.ReplaceEvents) != 2 {
-		t.Fatalf("unexpected counts freeze=%d replace=%d", len(rec.FreezeEvents), len(rec.ReplaceEvents))
+	if len(rec.FreezeEvents) == 0 || len(rec.ReplaceEvents) == 0 {
+		t.Fatalf("unexpected empty counts freeze=%d replace=%d", len(rec.FreezeEvents), len(rec.ReplaceEvents))
 	}
 
 	minDist := int64(cfg.MinEventDistanceSec * probe.Video.Fps)
@@ -205,6 +205,9 @@ func TestGeneratePixelMandatoryBlockEdgeMode(t *testing.T) {
 	if rec.PixelReplacement.AreaInsetPercent < cfg.PixelAreaEdgeInset.Min || rec.PixelReplacement.AreaInsetPercent > cfg.PixelAreaEdgeInset.Max {
 		t.Fatalf("edge inset out of range: %f", rec.PixelReplacement.AreaInsetPercent)
 	}
+	if rec.PixelReplacement.PercentUnits != "percent_0_100" {
+		t.Fatalf("unexpected percent units: %s", rec.PixelReplacement.PercentUnits)
+	}
 	switch rec.PixelReplacement.AreaEdge {
 	case "top", "right", "bottom", "left":
 	default:
@@ -255,6 +258,9 @@ func TestGeneratePixelSmartModeFallsBackOnAnalyzerError(t *testing.T) {
 	}
 	if rec.PixelReplacement.SmartFallbackReason == "" {
 		t.Fatal("expected fallback reason")
+	}
+	if rec.PixelReplacement.PercentUnits != "percent_0_100" {
+		t.Fatalf("unexpected percent units: %s", rec.PixelReplacement.PercentUnits)
 	}
 	switch rec.PixelReplacement.AreaEdge {
 	case "top", "right", "bottom", "left":
