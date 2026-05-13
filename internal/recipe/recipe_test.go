@@ -362,3 +362,43 @@ func TestTemporalCoordinatorFrameExactness(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateRecipeStructureExpandedAndDeterministic(t *testing.T) {
+	cfg := baseCfg()
+	cfg.ReplaceCount = config.EventCountRange{Min: 3, Max: 3}
+	installReplacePlannerStubs(t, cfg.InputDir, 60)
+	probe := &ffprobe.ProbeData{Duration: 14, Video: &ffprobe.VideoStream{Fps: 25, Width: 1920, Height: 1080}}
+
+	a, err := Generate(cfg, probe)
+	if err != nil {
+		t.Fatalf("Generate A failed: %v", err)
+	}
+	b, err := Generate(cfg, probe)
+	if err != nil {
+		t.Fatalf("Generate B failed: %v", err)
+	}
+	if !reflect.DeepEqual(a, b) {
+		t.Fatal("recipe must be deterministic for fixed seed")
+	}
+
+	if a.AVSineMode == "" || a.PixelReplacement.Mode == "" || a.Metadata.Mode == "" {
+		t.Fatalf("missing required recipe sections: %+v", a)
+	}
+	if len(a.TemporalEvents) == 0 || a.TemporalStats == nil {
+		t.Fatalf("temporal section must be populated: events=%d stats=%v", len(a.TemporalEvents), a.TemporalStats)
+	}
+	for _, ev := range a.TemporalEvents {
+		if ev.ID == "" || ev.SeedLineage == "" {
+			t.Fatalf("missing deterministic IDs/seed lineage in temporal event: %+v", ev)
+		}
+	}
+
+	for effect, st := range a.TemporalStats {
+		if st.Requested < st.Effective || st.Dropped != st.Requested-st.Effective {
+			t.Fatalf("invalid requested/effective/dropped accounting for %s: %+v", effect, st)
+		}
+		if st.Dropped > 0 && len(st.DropReasons) == 0 {
+			t.Fatalf("dropped events must include reason codes for %s: %+v", effect, st)
+		}
+	}
+}

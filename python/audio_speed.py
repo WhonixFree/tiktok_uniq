@@ -109,7 +109,7 @@ def apply_freezes(samples, params, freeze_events):
         insert = array("h")
         for _ in range(repeats - 1):
             insert.extend(segment)
-        fade_frames = min(max(1, int(0.005 * sample_rate)), length // 2, len(insert) // max(1, channels))
+        fade_frames = min(max(1, int(0.05 * sample_rate)), length // 2, len(insert) // max(1, channels))
         # Crossfade inserted edges against neighbors to keep transitions smooth.
         for i in range(fade_frames):
             gain_in = (i + 1) / fade_frames
