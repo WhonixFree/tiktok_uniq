@@ -1,6 +1,6 @@
 # Implementation Gap Audit for PROJECT_SPEC_FOR_CODEX_3
 
-Audit date: 2026-05-13.
+Audit date: 2026-05-13 (refreshed in full compliance run).
 
 This document records the current implementation status against `PROJECT_SPEC_FOR_CODEX_3.md`. Status values are:
 
@@ -11,7 +11,7 @@ This document records the current implementation status against `PROJECT_SPEC_FO
 ## Verification commands (this audit run)
 
 - `go test ./...` — passed.
-- No dedicated linter/static-analysis configuration was found in repository files (`.golangci*`, `Makefile` lint targets, or CI lint jobs were not detected), so lint verification is limited to `go test` compile/test coverage.
+- Static-analysis/lint config scan (`rg` for `.golangci*`, `staticcheck`, `revive`, `Makefile`/`Taskfile`/`justfile`, `.github` lint jobs) — no dedicated linter setup detected in repository tree; verification remains limited to Go test/compile coverage.
 
 | Requirement | Status | Notes | Proposed implementation |
 |---|---|---|---|
